@@ -35,7 +35,7 @@ included or downloaded.
 | Component | What it does |
 |---|---|
 | **pziOS launcher** (SwiftUI) | Imports your game, sets options, starts everything. |
-| **[OpenJDK 25](https://github.com/openjdk/jdk)** (JVM) | Runs the game's Java code natively on iOS. |
+| **JVM****[OpenJDK 25](https://github.com/openjdk/jdk)** | Runs the game's Java code natively on iOS. |
 | **JIT** ([StikJIT](https://github.com/StikDebug/StikJIT)) | Attaches a debugger so iOS permits JIT. |
 | **[MetalANGLE](https://github.com/kakashidinho/metalangle)** | Translates OpenGL ES calls into Apple's Metal. |
 | **[gl4es](https://github.com/ptitSeb/gl4es)** | Turns desktop OpenGL 2 into OpenGL ES. |
@@ -62,12 +62,13 @@ step exists.
 
 ## Supported Devices
 
-- iPhone 15 Pro Max or later.
-- iPad Pro A12z or later.
-- iPad Air M1 or later.
-- iPad mini A17 Pro or later.
-- iPad A16 or later. 
-- Devices outside these bounds may run with the 3.5GB Memory Mode in **Developer Tools** & **540p Render Resolution** but results may vary.
+- **iPhone 15 Pro or later.**
+- **iPad Pro A12z or later.**
+- **iPad Air M1 or later.**
+- **iPad Mini A17 Pro or later.**
+- **iPad A16 or later.** 
+- Devices outside these bounds may run with the 3.5GB Memory Mode in
+ **Developer Tools** & **540p Render Resolution** but results may vary.
 
 ## Requirements
 
