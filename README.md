@@ -31,7 +31,7 @@ included or downloaded.
 | Component | What it does |
 |---|---|
 | **pziOS launcher** (SwiftUI) | Imports your game, sets options, starts everything. |
-| **JVM****[OpenJDK 25](https://github.com/openjdk/jdk)** | Runs the game's Java code natively on iOS. |
+| **JVM** **[OpenJDK 25](https://github.com/openjdk/jdk)** | Runs the game's Java code natively on iOS. |
 | **JIT** ([StikJIT](https://github.com/StikDebug/StikJIT)) | Attaches a debugger so iOS permits JIT. |
 | **[MetalANGLE](https://github.com/kakashidinho/metalangle)** | Translates OpenGL ES calls into Apple's Metal. |
 | **[gl4es](https://github.com/ptitSeb/gl4es)** | Turns desktop OpenGL 2 into OpenGL ES. |
