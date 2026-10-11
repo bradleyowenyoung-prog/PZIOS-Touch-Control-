@@ -1,0 +1,178 @@
+name: ZomIOS
+options:
+  bundleIdPrefix: com.knt
+  deploymentTarget: { iOS: "17.0" }
+targets:
+  ZomIOS:
+    type: application
+    platform: iOS
+    configFiles: { Debug: Config/Signing.xcconfig, Release: Config/Signing.xcconfig }
+    sources:
+      - Sources
+      - JIT
+      - Shared
+      - Resources
+      - GameScripts
+      - Defaults
+      - { path: runtime, type: folder, buildPhase: resources }
+    dependencies:
+      - sdk: AVFoundation.framework
+      - sdk: GameController.framework
+      - framework: Frameworks/MetalANGLE.framework
+        embed: true
+        codeSign: true
+      - target: ZomJITHelper
+    entitlements:
+      path: ZomIOS.entitlements
+      properties:
+        com.apple.developer.kernel.increased-memory-limit: true
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: $(PZ_DISPLAY_NAME)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        PZReleaseLabel: $(PZ_RELEASE_LABEL)
+        UILaunchStoryboardName: LaunchScreen
+        UIFileSharingEnabled: true
+        NSMicrophoneUsageDescription: Project Zomboid's audio engine can use the microphone for in-game voice chat.
+        UIRequiresFullScreen: true
+        UIApplicationSupportsIndirectInputEvents: true
+        CADisableMinimumFrameDurationOnPhone: true      # lets ProMotion iPhones present above 60 Hz
+        GCSupportsGameMode: true                        # opts in to iOS Game Mode (needs the games category below)
+        LSApplicationCategoryType: public.app-category.games
+        NSLocalNetworkUsageDescription: Lets Project Zomboid find and join multiplayer servers on your local network.
+        UIStatusBarHidden: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        LSSupportsOpeningDocumentsInPlace: true
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: SceneDelegate
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(PZ_BUNDLE_ID)
+        DEVELOPMENT_TEAM: $(PZ_TEAM_ID)
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Info.plist
+        ENABLE_BITCODE: NO
+        ENABLE_DEBUG_DYLIB: NO
+        SWIFT_VERSION: "5.0"
+        SUPPORTED_PLATFORMS: iphoneos      # MetalANGLE and the JRE are device-only; the simulator preview is the ZomUIPreview scheme
+        SUPPORTS_MACCATALYST: NO
+    postBuildScripts:
+      - name: Sign bundled JRE
+        script: '"$SRCROOT/sign_jre.sh"'
+        basedOnDependencyAnalysis: false
+  ZomJITHelper:
+    configFiles: { Debug: Config/Signing.xcconfig, Release: Config/Signing.xcconfig }
+    # App extension that attaches StikJIT to the game (a process can't debug itself, so it runs separately).
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.4"
+    sources:
+      - JITHelper
+      - Shared
+    info:
+      path: JITHelper/Info.plist
+      properties:
+        CFBundleDisplayName: $(PZ_DISPLAY_NAME) JIT Helper
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionAttributes:
+            NSExtensionActivationRule: FALSEPREDICATE
+          NSExtensionPointIdentifier: com.apple.ar.viewer
+          NSExtensionPrincipalClass: ZomJITHelperHandler
+          NSExtensionContextClass: NSExtensionContext
+          NSExtensionContextHostClass: NSExtensionContext
+        XPCService:
+          ServiceType: Application
+          _MultipleInstances: true
+          _ProcessType: App
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(PZ_BUNDLE_ID).jithelper
+        DEVELOPMENT_TEAM: $(PZ_TEAM_ID)
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: JITHelper/Info.plist
+        SWIFT_VERSION: "5.0"
+        SKIP_INSTALL: YES
+        ENABLE_DEBUG_DYLIB: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        # StikJIT.xcframework has only an ios-arm64 (device) slice, so it is linked and embedded for device builds only
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]": "$(SRCROOT)/Frameworks/StikJIT.xcframework/ios-arm64"
+        "OTHER_LDFLAGS[sdk=iphoneos*]": "-framework StikJIT"
+    postBuildScripts:
+      - name: Embed StikJIT (device only)
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "$PLATFORM_NAME" = "iphoneos" ]; then
+            DEST="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
+            mkdir -p "$DEST"
+            rm -rf "$DEST/StikJIT.framework"
+            cp -R "$SRCROOT/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework" "$DEST/"
+            [ -n "$EXPANDED_CODE_SIGN_IDENTITY" ] && /usr/bin/codesign -f -s "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$DEST/StikJIT.framework" || true
+          fi
+        LD_RUNPATH_SEARCH_PATHS: ["$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks"]
+  ZomUIPreview:
+    configFiles: { Debug: Config/Signing.xcconfig, Release: Config/Signing.xcconfig }
+    # Launcher UI only (no JVM, runtime or MetalANGLE) so the layout can be iterated on a Mac / simulator without a phone.
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    dependencies:
+      - sdk: AVFoundation.framework
+      - sdk: GameController.framework
+    info:
+      path: Info-Preview.plist
+      properties:
+        CFBundleDisplayName: $(PZ_DISPLAY_NAME) Preview
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: SceneDelegate
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(PZ_BUNDLE_ID).preview
+        DEVELOPMENT_TEAM: $(PZ_TEAM_ID)
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Info-Preview.plist
+        GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "ZOM_UI_PREVIEW=1"]
+        SWIFT_VERSION: "5.0"
+        ENABLE_DEBUG_DYLIB: YES            # Xcode Previews need the debug dylib for app targets
+
+# Explicit schemes so they always exist (the implicit ones went missing after a regenerate).
+schemes:
+  ZomIOS:
+    build:
+      targets:
+        ZomIOS: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  ZomJITHelper:
+    build:
+      targets:
+        ZomJITHelper: all
+  ZomUIPreview:
+    build:
+      targets:
+        ZomUIPreview: all
+    run:
+      config: Debug

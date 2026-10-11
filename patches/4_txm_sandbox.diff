@@ -1,0 +1,30 @@
+diff --git a/src/hotspot/os/bsd/os_bsd.cpp b/src/hotspot/os/bsd/os_bsd.cpp
+index 07d065b..88756ea 100644
+--- a/src/hotspot/os/bsd/os_bsd.cpp
++++ b/src/hotspot/os/bsd/os_bsd.cpp
+@@ -147,9 +147,15 @@ char* BreakGetJITMapping(size_t bytes) {
+ 
+ bool DeviceRequiresTXMWorkaround() {
+     if(__builtin_available(iOS 19.0, *)) {
++        // The app sandbox denies /private/preboot, so opendir() normally fails. In that case assume a
++        // TXM device (A15+/M2+ on iOS 26+, A13+/M1+ on iOS 27+) unless ZOMIOS_NO_TXM is set.
++        char txmPath[PATH_MAX];
++        txmPath[0] = 0;
+         DIR *d = opendir("/private/preboot");
++        if(d == NULL) {
++            return getenv("ZOMIOS_NO_TXM") == NULL;
++        }
+         struct dirent *dir;
+-        char txmPath[PATH_MAX];
+         while ((dir = readdir(d)) != NULL) {
+             if(strlen(dir->d_name) == 96) {
+                 snprintf(txmPath, sizeof(txmPath), "/private/preboot/%s/usr/standalone/firmware/FUD/Ap,TrustedExecutionMonitor.img4", dir->d_name);
+@@ -157,7 +163,7 @@ bool DeviceRequiresTXMWorkaround() {
+             }
+         }
+         closedir(d);
+-        return access(txmPath, F_OK) == 0;
++        return txmPath[0] && access(txmPath, F_OK) == 0;
+     } else {
+         return false;
+     }

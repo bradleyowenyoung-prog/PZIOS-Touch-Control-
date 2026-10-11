@@ -1,0 +1,40 @@
+diff --git a/src/hotspot/cpu/aarch64/gc/z/zAddress_aarch64.cpp b/src/hotspot/cpu/aarch64/gc/z/zAddress_aarch64.cpp
+index 7008615ed..d0f4b8cb0 100644
+--- a/src/hotspot/cpu/aarch64/gc/z/zAddress_aarch64.cpp
++++ b/src/hotspot/cpu/aarch64/gc/z/zAddress_aarch64.cpp
+@@ -31,9 +31,9 @@
+ #include "utilities/globalDefinitions.hpp"
+ #include "utilities/powerOfTwo.hpp"
+ 
+-#ifdef LINUX
++#if defined(LINUX) || defined(__APPLE__)
+ #include <sys/mman.h>
+-#endif // LINUX
++#endif // LINUX || __APPLE__
+ 
+ // Default value if probing is not implemented for a certain platform
+ // Max address bit is restricted by implicit assumptions in the code, for instance
+@@ -42,8 +42,10 @@ static const size_t DEFAULT_MAX_ADDRESS_BIT = 46;
+ // Minimum value returned, if probing fail
+ static const size_t MINIMUM_MAX_ADDRESS_BIT = 36;
+ 
++// iOS (and macOS) used to take the default of 46 bits, which put the heap at 2^42 (4 TB). An iOS process only has a 39-bit address space, so ZGC
++// could not reserve its heap at all ("Failed to reserve ... address space for Java heap"). Probing like Linux finds the real limit instead.
+ static size_t probe_valid_max_address_bit() {
+-#ifdef LINUX
++#if defined(LINUX) || defined(__APPLE__)
+   size_t max_address_bit = 0;
+   const size_t page_size = os::vm_page_size();
+   for (size_t i = DEFAULT_MAX_ADDRESS_BIT; i > MINIMUM_MAX_ADDRESS_BIT; --i) {
+@@ -86,9 +88,9 @@ static size_t probe_valid_max_address_bit() {
+   }
+   log_info_p(gc, init)("Probing address space for the highest valid bit: %zu", max_address_bit);
+   return MAX2(max_address_bit, MINIMUM_MAX_ADDRESS_BIT);
+-#else // LINUX
++#else // LINUX || __APPLE__
+   return DEFAULT_MAX_ADDRESS_BIT;
+-#endif // LINUX
++#endif // LINUX || __APPLE__
+ }
+ 
+ size_t ZPlatformAddressOffsetBits() {

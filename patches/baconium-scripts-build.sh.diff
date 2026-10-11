@@ -1,0 +1,19 @@
+diff --git a/scripts/build.sh b/scripts/build.sh
+index 69cc7b1..9b084f7 100755
+--- a/scripts/build.sh
++++ b/scripts/build.sh
+@@ -132,10 +132,10 @@ fi
+ # GNU strip corrupts Mach-O LC_BUILD_VERSION (AMFI then kills the host tools it produced), and the
+ # host-side tools (adlc, ...) need an explicit macOS deployment target.
+ for f in "$B/spec.gmk" "$B/buildjdk-spec.gmk"; do [ -f "$f" ] || continue
+-  sed -i '' \
+-    -e 's#^\(BUILD_CC\|BUILD_LD\|CC\|LD\) *:= *\(/opt/homebrew/opt/llvm/bin/clang\) *$#\1 := \2 -mmacosx-version-min=11.0#' \
+-    -e 's#^\(BUILD_CXX\|BUILD_LDCXX\|CXX\|LDCXX\) *:= *\(/opt/homebrew/opt/llvm/bin/clang++\) *$#\1 := \2 -mmacosx-version-min=11.0#' \
+-    -e 's#^\(BUILD_STRIP\|STRIP\) *:= */opt/homebrew/opt/binutils/bin/strip$#\1 := /usr/bin/strip#' \
++  sed -i '' -E \
++    -e 's#^(BUILD_CC|BUILD_LD|CC|LD) *:= *(/opt/homebrew/opt/llvm/bin/clang) *$#\1 := \2 -mmacosx-version-min=11.0#' \
++    -e 's#^(BUILD_CXX|BUILD_LDCXX|CXX|LDCXX) *:= *(/opt/homebrew/opt/llvm/bin/clang\+\+) *$#\1 := \2 -mmacosx-version-min=11.0#' \
++    -e 's#^(BUILD_STRIP|STRIP) *:= */opt/homebrew/opt/binutils/bin/strip$#\1 := /usr/bin/strip#' \
+     -e 's#^STRIPFLAGS *:= *--strip-debug$#STRIPFLAGS := -S#' \
+     -e 's/-mmacosx-version-min=11\.00\.00 //g' "$f"
+ done

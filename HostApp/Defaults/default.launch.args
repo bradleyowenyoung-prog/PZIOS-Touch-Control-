@@ -1,0 +1,35 @@
+# zomios-default v1  (pziOS writes this file to Documents/launch.args when it is missing, and replaces it with a newer default only while it is still unmodified)
+@env ZOMIOS_ASTC=512
+-XX:-UseCompressedClassPointers
+-XX:+UnlockExperimentalVMOptions
+-XX:+DisablePrimordialThreadGuardPages
+-XX:+MirrorMappedCodeCache
+-XX:ReservedCodeCacheSize=128M
+-Xshare:off
+-Djava.awt.headless=true
+@chdir $DOCS/game
+-XX:+UseParallelGC
+-XX:ParallelGCThreads=6
+-XX:CICompilerCount=2
+-Xlog:gc:stdout:uptime
+@env ZOMIOS_MEMLOG=0
+@env LIBGL_SHRINK=7
+@env LIBGL_NOERROR=1
+-XX:TieredStopAtLevel=1
+-Xms1024m
+-Xmx2560m
+-Djava.library.path=$BUNDLE/natives
+-Dorg.lwjgl.librarypath=$BUNDLE/natives
+-Duser.home=$DOCS/home
+-Dzomboid.steam=0
+-Dzomboid.znetlog=1
+-XX:-OmitStackTraceInFastThrow
+--enable-native-access=ALL-UNNAMED
+--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED
+-Dorg.lwjgl.glfw.libname=$BUNDLE/natives/libglfw.dylib
+-Dorg.lwjgl.opengl.libname=$BUNDLE/natives/libGLshim.dylib
+-Dorg.lwjgl.glfw.checkThread0=false
+-Dorg.lwjgl.system.allocator=system
+-cp
+$DOCS/projectzomboid.jar
+zombie.gameStates.MainScreenState

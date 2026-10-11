@@ -1,0 +1,81 @@
+--- patches/zVirtualMemoryManager_posix.cpp.orig	2026-10-10 03:56:22
++++ jdk-build/openjdk-25/src/hotspot/os/posix/gc/z/zVirtualMemoryManager_posix.cpp	2026-10-10 04:05:52
+@@ -21,6 +21,7 @@
+  * questions.
+  */
+ 
++#include "gc/shared/gcLogPrecious.hpp"
+ #include "gc/z/zAddress.inline.hpp"
+ #include "gc/z/zVirtualMemoryManager.hpp"
+ #include "logging/log.hpp"
+@@ -29,7 +30,41 @@
+ #endif
+ 
+ #include <sys/mman.h>
++#include <errno.h>
++#ifdef __APPLE__
++#include <mach/mach.h>
++#include <mach/vm_map.h>
+ 
++// pziOS diagnostics: log every free gap of at least 1 GB between 1 GB and 1 TB, so we can see where a big reservation could ever fit.
++static void pzios_log_free_gaps() {
++  vm_address_t addr = (vm_address_t)1 << 30;
++  vm_address_t prev_end = addr;
++  int regions = 0, gaps = 0;
++  const vm_address_t limit = (vm_address_t)1 << 40;
++  while (addr < limit) {
++    vm_size_t size = 0;
++    vm_region_basic_info_data_64_t info;
++    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
++    mach_port_t object = MACH_PORT_NULL;
++    vm_address_t at = addr;
++    if (vm_region_64(mach_task_self(), &at, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object) != KERN_SUCCESS) {
++      break;
++    }
++    regions++;
++    if (at > prev_end && (at - prev_end) >= ((vm_address_t)1 << 30)) {
++      log_info_p(gc, init)("free gap: " PTR_FORMAT " - " PTR_FORMAT " (%lluM)", (uintptr_t)prev_end, (uintptr_t)at, (unsigned long long)((at - prev_end) >> 20));
++      gaps++;
++    }
++    prev_end = at + size;
++    addr = at + size;
++  }
++  if (limit > prev_end && (limit - prev_end) >= ((vm_address_t)1 << 30)) {
++    log_info_p(gc, init)("free gap: " PTR_FORMAT " - " PTR_FORMAT " (%lluM, to the 1 TB probe limit)", (uintptr_t)prev_end, (uintptr_t)limit, (unsigned long long)((limit - prev_end) >> 20));
++  }
++  log_info_p(gc, init)("address space survey: %d mapped regions above 1 GB, %d gaps of 1 GB or more before the last region", regions, gaps);
++}
++#endif
++
+ void ZVirtualMemoryReserver::pd_register_callbacks(ZVirtualMemoryRegistry* registry) {
+   // Does nothing
+ }
+@@ -37,17 +72,28 @@
+ bool ZVirtualMemoryReserver::pd_reserve(zaddress_unsafe addr, size_t size) {
+   const int flags = MAP_ANONYMOUS|MAP_PRIVATE|MAP_NORESERVE LINUX_ONLY(|MAP_FIXED_NOREPLACE);
+ 
++  // pziOS diagnostics: say what the first few refused reservations looked like (first, last and every 1000th attempt are enough to see the pattern).
++  static int attempts = 0;
++  const int attempt = attempts++;
++#ifdef __APPLE__
++  if (attempt == 0) pzios_log_free_gaps();
++#endif
++  const bool report = attempt < 4 || attempt % 1000 == 0;
++
+   void* const res = mmap((void*)untype(addr), size, PROT_NONE, flags, -1, 0);
+   if (res == MAP_FAILED) {
+     // Failed to reserve memory
++    if (report) log_info_p(gc, init)("pd_reserve #%d: mmap(" PTR_FORMAT ", %zuM) failed, errno %d", attempt, untype(addr), size / M, errno);
+     return false;
+   }
+ 
+   if (res != (void*)untype(addr)) {
+     // Failed to reserve memory at the requested address
++    if (report) log_info_p(gc, init)("pd_reserve #%d: asked " PTR_FORMAT " (%zuM) got " PTR_FORMAT, attempt, untype(addr), size / M, p2i(res));
+     munmap(res, size);
+     return false;
+   }
++  if (report) log_info_p(gc, init)("pd_reserve #%d: reserved " PTR_FORMAT " (%zuM)", attempt, untype(addr), size / M);
+ 
+   // Success
+   return true;

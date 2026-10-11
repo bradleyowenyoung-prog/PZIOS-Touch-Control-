@@ -1,0 +1,7 @@
+// Your identity for the build. Edit these three lines, or put your own values in Config/Signing.local.xcconfig (git-ignored, overrides this file).
+PZ_BUNDLE_ID = com.knt.pzios
+PZ_TEAM_ID =
+PZ_DISPLAY_NAME = pziOS
+#include? "Signing.local.xcconfig"
+
+#include "Version.xcconfig"
