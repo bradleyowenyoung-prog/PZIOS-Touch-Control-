@@ -52,19 +52,22 @@ step exists.
 ## Features
 
 - Solo play, mods, saves, and direct-connect multiplayer.
-- **Controls**: editable touch layout with an aim stick, game controllers (a DualSense has been
-  - tested), keyboard and mouse. On-screen controls hide when a controller or keyboard and mouse
-  are connected.
+- **Controls**: editable touch layout with an aim stick, game controllers, keyboard and mouse. On-screen controls hide when a controller or keyboard and mouse are connected.
 - **Display**: render resolution presets, UI margins sized to your screen (Auto, or set your own),
   up to 120 Hz, iPad layouts.
 - **Performance options**: memory limit tiers chosen from what iOS lets the app use, garbage
   collector choices (Parallel, pzGC, SGC, pzSGC), JIT compiler choices, ASTC texture compression
   with a disk cache.
 - **Setup guide** that imports the game and walks through JIT.
+
 ## Supported Devices
+
 - iPhone 15 Pro Max or later.
-- iPads with **Atleast** 6GB of Ram.
-- Devices outside these bounds may test with the 3.5GB Memory Mode in **Developer Tool**s & **540p Render Resolution** but results may vary.
+- iPad Pro A12z or later.
+- iPad Air M1 or later.
+- iPad mini A17 Pro or later.
+- iPad A16 or later. 
+- Devices outside these bounds may run with the 3.5GB Memory Mode in **Developer Tools** & **540p Render Resolution** but results may vary.
 
 ## Requirements
 
@@ -111,8 +114,7 @@ Mac executables and libraries are ignored.
 - **Import fails**: the source has to be fully downloaded (not an iCloud placeholder) and there
   must be enough free space. You can cancel an import and start it again; finished files are kept.
 
-**Bug reports**: open an issue with your device  in (https://discord.gg/yJAqxvvnFq) 
-and iOS version, the pziOS version shown at the bottom of the launcher, what you did, and `jvm.log` (Files app, your device, pziOS folder). Turn on** Log Memory Use** (Tools tab) first for memory problems.
+**Bug reports**: open an issue with your device name and iOS version, the pziOS version shown at the bottom of the launcher, what you did, and `jvm.log` (Files app, your device, pziOS folder). Turn on** Log Memory Use** (Tools tab) first for memory problems.
 
 ## Building from source
 
