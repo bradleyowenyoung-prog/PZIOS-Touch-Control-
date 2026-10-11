@@ -9,7 +9,7 @@
   &nbsp;
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge&labelColor=111111" alt="MIT licence"></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/iOS-17%2B-blue?style=for-the-badge&labelColor=111111" alt="iOS 17 or later">
+  <img src="https://img.shields.io/badge/iOS-17%2B-blue?style=for-the-badge&labelColor=111111" alt="iOS 26 or later">
 </p>
 
 pziOS runs Project Zomboid (Build 42) on an iPhone or iPad with no jailbreak. It is a launcher
@@ -68,7 +68,7 @@ step exists.
 
 ## Requirements
 
-- An iPhone or iPad on **iOS or iPadOS 17 or later** with **Developer Mode** turned on
+- An iPhone or iPad on **iOS or iPadOS 26 or later** with **Developer Mode** turned on
   (Settings, Privacy & Security, Developer Mode).
 - **Project Zomboid Build 42.21** for Mac. You need the game; pziOS only needs a copy of its files.
 - About **5 GB** of free space for the game, plus about 250 MB for the app.
