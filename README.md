@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/assets/icon.png" alt="pziOS" width="128">
-</p>
-
 <h1 align="center">pziOS</h1>
 
 <p align="center"><b>Project Zomboid Build 42 on your iPhone and iPad.</b></p>
