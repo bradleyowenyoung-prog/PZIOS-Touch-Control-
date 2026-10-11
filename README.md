@@ -157,5 +157,6 @@ Classpath Exception); each release attaches its complete source change set.
 
 Thanks to the OpenJDK project, MetalANGLE, gl4es, ARM's astc-encoder, StikJIT,
 Baconium's iOS JVM work, and to the LWJGL, FMOD and Project Zomboid teams whose libraries the game
-runs on. 
+runs on.
+Thanks to **Claude** as a major contributor to the project.
 **Project Zomboid is a trademark of The Indie Stone & not affiliated with pziOS.**
