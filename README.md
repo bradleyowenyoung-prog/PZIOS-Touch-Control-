@@ -113,6 +113,17 @@ steamcmd +@sSteamCmdForcePlatformType macos +force_install_dir ./pz-mac +login <
 Then zip the downloaded `Project Zomboid.app` folder (or its `Contents` folder) and move the zip to
 your device.
 
+### Manual JIT with StikDebug
+
+If you do not use the built-in JIT, set **JIT Mode** to **Manual** in pziOS and use the script
+[`scripts/zomios-jvm.js`](https://github.com/onlyknt/pziOS/blob/main/scripts/zomios-jvm.js)
+([raw file](https://raw.githubusercontent.com/onlyknt/pziOS/main/scripts/zomios-jvm.js)):
+
+1. Add the script to StikDebug's scripts.
+2. In pziOS press **Play**, then run the script on the pziOS process in StikDebug.
+3. The script attaches, hands the game its executable memory when it asks, and detaches.
+
+
 ## If something goes wrong
 
 - **Black screen after Play**: make sure you installed the IPA that includes the game's libraries,
