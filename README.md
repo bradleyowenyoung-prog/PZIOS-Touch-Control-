@@ -100,7 +100,18 @@ game folder works too; pziOS searches the zip for `projectzomboid.jar`.
 In pziOS tap **Choose zip or folder…** and pick the zip. Only the files the game needs are copied;
 Mac executables and libraries are ignored.
 
-## 
+### No Mac? Get the Mac version of the game with SteamCMD
+
+pziOS needs the **macOS** copy of Project Zomboid: the Windows files do not match, and the game's
+native libraries are matched to the Mac build. On Windows or Linux you can download the Mac depot
+with [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD), using a Steam account that owns the game:
+
+```
+steamcmd +@sSteamCmdForcePlatformType macos +force_install_dir ./pz-mac +login <your steam user> +app_update 108600 validate +quit
+```
+
+Then zip the downloaded `Project Zomboid.app` folder (or its `Contents` folder) and move the zip to
+your device.
 
 ## If something goes wrong
 
