@@ -63,8 +63,7 @@ step exists.
 - **iPad Air M1 or later.**
 - **iPad Mini A17 Pro or later.**
 - **iPad A16 or later.** 
-- Devices outside these bounds may run with the 3.5GB Memory Mode in
- **Developer Tools** & **540p Render Resolution** but results may vary.
+- Devices outside these bounds may run with **Increased Memory Limit** but results may vary.
 
 ## Requirements
 
