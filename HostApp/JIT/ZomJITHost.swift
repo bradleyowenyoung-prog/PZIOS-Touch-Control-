@@ -18,18 +18,31 @@ import UIKit
 @objc(ZomJITHost)
 public final class ZomJITHost: NSObject {
     static let helperFile = "ZomJITHelper.appex"
+    /// The classic JIT path (no debugger-provided memory): iOS older than 19 unless the preference zom.classicJIT says otherwise (1 force on, 0 force off).
+    static var usesClassicJIT: Bool {
+        let forced = UserDefaults.standard.object(forKey: "zom.classicJIT") as? Int
+        let old = !ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 19, minorVersion: 0, patchVersion: 0))
+        return forced.map { $0 == 1 } ?? old
+    }
     static let methodKey = "zom.jitMethod"            // 0 manual (external StikDebug script), 1 built-in StikJIT
     @objc public static var failureMessage: String?    // set when the helper fails; the launcher stops waiting for a debugger
 
     private static var running: [Request] = []
-
-    static var hasPairingFile: Bool { PairingStore.exists }
 
     static var unavailableReason: String? {
         guard #available(iOS 17.4, *) else { return "Built-in JIT needs iOS 17.4 or later." }
         if getenv("LC_HOME_PATH") != nil { return "Built-in JIT is unavailable inside LiveContainer." }
         if helperIdentifier == nil { return "The JIT helper is missing from this install." }
         return nil
+    }
+    /// One line for the top of jvm.log: which helper this install has and which JIT path is selected.
+    @objc public static var diagnosticSummary: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let ver = "\(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["PZReleaseLabel"] as? String ?? "?")) build \(info["CFBundleVersion"] as? String ?? "?")"
+        let method = UserDefaults.standard.integer(forKey: methodKey) == 1 ? "built-in" : "manual"
+        let plugin = Bundle.main.builtInPlugInsURL?.appendingPathComponent(helperFile).path
+        let present = plugin.map { FileManager.default.fileExists(atPath: $0) } ?? false
+        return "app: \(Bundle.main.bundleIdentifier ?? "?"), version \(ver), JIT method \(method), helper \(helperIdentifier ?? "none") (\(present ? "present" : "missing")), pairing file \(PairingStore.exists ? "yes" : "no"), LiveContainer \(getenv("LC_HOME_PATH") != nil ? "yes" : "no")"
     }
     static var helperIdentifier: String? {
         guard let url = Bundle.main.builtInPlugInsURL?.appendingPathComponent(helperFile) else { return nil }
@@ -46,8 +59,14 @@ public final class ZomJITHost: NSObject {
         guard let pairing = PairingStore.load(), !pairing.isEmpty else {
             failureMessage = "No pairing file. Import one in Settings > JIT."; return true
         }
-        guard let scriptURL = Bundle.main.url(forResource: "zomios-jvm", withExtension: "js"), let script = try? Data(contentsOf: scriptURL) else {
+        guard let scriptURL = Bundle.main.url(forResource: "pzios-jvm", withExtension: "js"), var script = try? Data(contentsOf: scriptURL) else {
             failureMessage = "The bundled JIT script is missing."; return true
+        }
+        // iOS 17 and 18 (or zom.classicJIT forced on) run the JVM's classic JIT path, which never asks the debugger for memory. The script must then attach and
+        // let go at once: left attached it would stop on every page-protection fault the JVM handles itself, which makes the game many times slower.
+        if Self.usesClassicJIT, var text = String(data: script, encoding: .utf8) {
+            text = text.replacingOccurrences(of: "const EXPECTED_REQUESTS = 1;", with: "const EXPECTED_REQUESTS = 0;")
+            script = Data(text.utf8)
         }
         let request = ZomJITRequest(operation: .enable, targetPID: getpid(), pairingData: pairing, scriptBase64: script.base64EncodedString())
         DispatchQueue.main.async {
@@ -110,12 +129,12 @@ public final class ZomJITHost: NSObject {
         func fail(_ code: Int, _ message: String) {
             completion(.failure(NSError(domain: "ZomJITHost", code: code, userInfo: [NSLocalizedDescriptionKey: message])))
         }
-        guard let identifier = helperIdentifier else { return fail(1, "The JIT helper is missing from this install.") }
+        guard let identifier = helperIdentifier else { return fail(1, "The JIT helper is missing from this install (error 1). The app was probably installed without its extensions; reinstall keeping app extensions, or use StikDebug.") }
         if NSClassFromString("NSExtension") == nil { dlopen("/System/Library/Frameworks/ExtensionFoundation.framework/ExtensionFoundation", RTLD_NOW) }
-        guard let cls = NSClassFromString("NSExtension") else { return fail(2, "iOS did not provide the extension API the JIT helper needs.") }
+        guard let cls = NSClassFromString("NSExtension") else { return fail(2, "iOS did not provide the extension API the JIT helper needs (error 2). Use StikDebug instead.") }
         let found: AnyObject
         do { found = try unsafeBitCast(cls as AnyObject, to: NSExtensionClassShim.self).extension(withIdentifier: identifier) }
-        catch { return fail(3, "The JIT helper (\(identifier)) could not be found: \(error.localizedDescription)") }
+        catch { return fail(3, "The JIT helper (\(identifier)) could not be found (error 3): \(error.localizedDescription). The sideloading tool may have changed the bundle ID of the app but not of the helper; reinstall, or use StikDebug.") }
         guard let data = try? JSONEncoder().encode(request) else { return fail(4, "The JIT request could not be encoded.") }
         let req = Request(extension: found, operation: request.operation.rawValue, completion: completion)
         running.append(req)
@@ -151,7 +170,7 @@ public final class ZomJITHost: NSObject {
             shim.beginExtensionRequest(withInputItems: [item]) { [weak self] uuid in
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    guard let uuid else { self.end(.failure(Self.error(7, "The JIT helper did not start."))); return }
+                    guard let uuid else { self.end(.failure(Self.error(7, "iOS would not start the JIT helper (error 7). The sideloading tool may have removed or not signed it, or changed the bundle ID. Reinstall keeping app extensions, or use StikDebug with the script from the README."))); return }
                     print("[jit-helper] \(self.operation): started \(identifier) as pid \(self.shim.pid(forRequestIdentifier: uuid))")
                 }
             }

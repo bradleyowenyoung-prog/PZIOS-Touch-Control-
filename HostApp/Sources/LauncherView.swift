@@ -1,6 +1,7 @@
 // Launcher screen. Edit freely: in Xcode, open this file with the ZomUIPreview scheme selected and the canvas (Editor > Canvas) redraws as you type.
 // Settings use the same UserDefaults keys and defaults as the Objective-C launch code in main.m, which reads them when PLAY is pressed.
 import SwiftUI
+@_silgen_name("zom_zink_probe") private func zomZinkProbe(_ out: UnsafeMutablePointer<CChar>, _ cap: Int) -> Int32
 import os
 import UIKit
 import GameController
@@ -8,7 +9,7 @@ import UniformTypeIdentifiers
 
 @objc(ZomLauncherModel)
 public final class LauncherModel: NSObject, ObservableObject {
-    @Published var log = "ZomIOS ready. The JVM starts once per launch; relaunch the app between runs.\n"
+    @Published var log = "pziOS ready. The JVM starts once per launch; relaunch the app between runs.\n"
     @Published var running = false
     // Built-in JIT (wired by ZomJITHost in the game app; inert in the UI preview)
     @Published var jitAvailable = true
@@ -57,11 +58,9 @@ private func defaultHeapMode() -> Int {
 /// Sizes come from the screen, not model names, so phones and iPads released later lay out sensibly without a code change.
 struct Metrics {
     let s: CGFloat
-    let isPad: Bool
     init(size: CGSize) {
         let h = min(size.width, size.height)
         s = min(max(h / 440, 0.85), 1.8)
-        isPad = UIDevice.current.userInterfaceIdiom == .pad
     }
     func v(_ x: CGFloat) -> CGFloat { x * s }
 }
@@ -333,7 +332,7 @@ struct LauncherView: View {
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
         .persistentSystemOverlays(.hidden)
-        .fullScreenCover(isPresented: $showSettings) { SettingsView(model: model, onRun: onRun, pad: pad) }
+        .fullScreenCover(isPresented: $showSettings) { SettingsView(model: model, pad: pad) }
         .fullScreenCover(isPresented: $showSetup, onDismiss: { build = GameBuild.loaded() }) { SetupView(model: model, pad: pad) }
         .alert("Garbage collector switched back", isPresented: $showGCNotice) {
             Button("OK") { UserDefaults.standard.set(false, forKey: "zom.gcReverted") }
@@ -344,6 +343,9 @@ struct LauncherView: View {
             let d = UserDefaults.standard
             if d.integer(forKey: "zom.gc") != 0 && d.bool(forKey: "zom.gcTrial") && !d.bool(forKey: "zom.gcOK") {
                 d.set(0, forKey: "zom.gc"); d.set(false, forKey: "zom.gcTrial"); d.set(true, forKey: "zom.gcReverted")
+            }
+            if d.bool(forKey: "zom.ramDonorHeap") && d.bool(forKey: "zom.ramDonorTrial") && !d.bool(forKey: "zom.ramDonorOK") {
+                d.set(false, forKey: "zom.ramDonorHeap"); d.set(false, forKey: "zom.ramDonorTrial")
             }
             TouchLayoutStore.ensureSaved()
             build = GameBuild.loaded()
@@ -435,7 +437,7 @@ private enum Tab: Int, CaseIterable {
     var developerOnly: Bool { self == .tools || self == .log }
 }
 
-private enum Editor: String, Identifiable { case touch, margins, setup; var id: String { rawValue } }
+private enum Editor: String, Identifiable { case touch, pad, margins, setup; var id: String { rawValue } }
 
 /// One line on a settings page. Pages are plain data, so the same rows drive touch, the focus ring and gamepad input.
 struct Row: Identifiable {
@@ -459,7 +461,6 @@ struct Row: Identifiable {
 
 struct SettingsView: View {
     @ObservedObject var model: LauncherModel
-    var onRun: (Int) -> Void
     @ObservedObject var pad: PadNav
     @Environment(\.dismiss) private var dismiss
 
@@ -471,8 +472,17 @@ struct SettingsView: View {
     @AppStorage("zom.devTools") private var devTools = false            // reveals the Tools and Log tabs
     @AppStorage("zom.gc") private var gc = 0                            // 0 Parallel, 1 ZGC (cannot start on iOS), 2 SGC (generational Shenandoah), 3 Tuned Parallel
     @AppStorage("zom.jitCompiler") private var jitCompiler = 0          // 0 C1 only, 1 C1 + C2 gentle, 2 C1 + C2 full
-    @AppStorage("zom.lowMem") private var lowMem = false                // developer: low memory mode, locks every setting that changes memory use
     @AppStorage("zom.framePool") private var framePool = false          // experimental: per-frame autorelease pool on the render thread
+    @State private var zinkResult = ""                                   // result text of the Zink probe
+    @State private var zinkRunning = false
+    @AppStorage("zom.donorHeapGB") private var donorHeapGB = 1          // Increased Memory Limit: 0 = the Memory Limit tier, 1...4 = 3...6 GB (default 3 GB)
+    @AppStorage("zom.padStyle") private var padStyle = 0                  // virtual gamepad labels: 0 Xbox, 1 PlayStation
+    @AppStorage("zom.virtualPad") private var virtualPad = false          // on-screen controls act as a game controller instead of keyboard and mouse
+    @AppStorage("zom.ramDonorHeap") private var ramDonorHeap = false      // experimental: Java heap in memory held by the donor extension
+    @AppStorage("zom.twoFingerZoom") private var twoFingerZoom = true       // two-finger scroll on empty screen (the game's zoom)
+    @AppStorage("zom.zinkBackend") private var zinkBackend = false      // experimental: run the game on Mesa Zink + MoltenVK (OpenGL 4.5) instead of gl4es + MetalANGLE
+    @AppStorage("zom.zinkLog") private var zinkLog = false              // with the Zink backend: write performance and device details to jvm.log
+    @AppStorage("zom.zombieBuddy") private var zombieBuddy = false       // developer: start the game with -javaagent:ZombieBuddy.jar
     @AppStorage("zom.memLog") private var memLog = false                 // developer: write the memory footprint to jvm.log every 5 s
     @AppStorage("zom.simAspect") private var simAspect = 0              // developer: 0 off, 1 4:3, 2 3:2, 3 16:10, 4 16:9
     @AppStorage("zom.renderRes") private var renderRes = UIDevice.current.userInterfaceIdiom == .pad ? 2 : 1              // 0 540p, 1 720p, 2 900p, 3 1080p (the game's logical height)
@@ -515,6 +525,11 @@ struct SettingsView: View {
     }
     /// Very High (a 4 GB heap) is offered on every device. It is the default only on devices with 12 GB of memory or more, such as the iPad Pro.
     private var heapOptions: [String] { ["Low", "Medium", "High", "Very High"] }
+    /// Increased Memory Limit choices: the first is the current Memory Limit tier stated in GB (1.5, 2, 2.5 or 4), then 3 to 6 GB.
+    private var increasedLimitOptions: [String] {
+        let tierGB = ["1.5 GB", "2 GB", "2.5 GB", "4 GB"][min(max(heap, 0), 3)]
+        return [tierGB + (heap == 3 ? " (Limit)" : ""), "3 GB", "4 GB", "5 GB", "6 GB"]
+    }
     private var heapBinding: Binding<Int> {
         Binding(get: { min(max(heap, 0), heapOptions.count - 1) }, set: { heap = $0 })
     }
@@ -554,8 +569,6 @@ struct SettingsView: View {
             + " Applies the next time the game starts."
     }
     /// In low memory mode the memory settings show the values the mode forces and ignore changes.
-    private func forced<T>(_ b: Binding<T>, _ v: T) -> Binding<T> { Binding(get: { lowMem ? v : b.wrappedValue }, set: { if !lowMem { b.wrappedValue = $0 } }) }
-    private var lockNote: String { lowMem ? "Set by Low Memory Mode. " : "" }
     private var astcDetail: String {
         astc ? "On: Large textures are compressed on the GPU to save memory. The first launch builds a cache and loads slower."
              : "Off: Textures stay uncompressed. Faster first launch, but uses more graphics memory."
@@ -564,10 +577,10 @@ struct SettingsView: View {
         switch tab {
         case .graphics:
             return [
-                Row(id: "shrink", title: "Texture Compression", kind: .choice(["Off", "Balanced", "Strong"], forced($shrink, 2)),
-                    detail: lockNote + shrinkDetail, locked: lowMem),
-                Row(id: "hires", title: "High Definition Textures", kind: .toggle(forced(hiResBinding, false)),
-                    detail: lockNote + hiResDetail, locked: lowMem),
+                Row(id: "shrink", title: "Texture Compression", kind: .choice(["Off", "Balanced", "Strong"], $shrink),
+                    detail: shrinkDetail),
+                Row(id: "hires", title: "High Definition Textures", kind: .toggle(hiResBinding),
+                    detail: hiResDetail),
             ]
         case .display:
             return [
@@ -578,24 +591,42 @@ struct SettingsView: View {
             ]
         case .performance:
             return [
-                Row(id: "heap", title: "Memory Limit", kind: .choice(heapOptions, forced(heapBinding, 0)), detail: lockNote + heapDetail, locked: lowMem),
-                Row(id: "gc", title: "Garbage Collector", kind: .choice(["Parallel", "pzGC", "SGC", "pzSGC"], forced(gcBinding, 1)), detail: lockNote + gcDetail, locked: lowMem),
-                Row(id: "astc", title: "ASTC Compression", kind: .toggle(forced($astc, true)),
-                    detail: lockNote + astcDetail, locked: lowMem),
-            ]
+                Row(id: "heap", title: "Memory Limit", kind: .choice(heapOptions, heapBinding), detail: heapDetail),
+                Row(id: "gc", title: "Garbage Collector", kind: .choice(["Parallel", "pzGC", "SGC", "pzSGC"], gcBinding), detail: gcDetail),
+                Row(id: "astc", title: "ASTC Compression", kind: .toggle($astc),
+                    detail: astcDetail),
+                Row(id: "extramem", title: "Increased Memory", kind: .toggle($ramDonorHeap),
+                    detail: "Holds the game's Java memory in helper processes, so iOS doesn't count it against the app. Uses private iOS features and may stop working. Applies on the next start."),
+            ] + (ramDonorHeap ? [
+                Row(id: "donorheapsize", title: "Increased Memory Limit", kind: .choice(increasedLimitOptions, $donorHeapGB),
+                    detail: "Java memory size while Increased Memory is on. The first choice is your normal Memory Limit. The device's own RAM is the real limit. Applies on the next start."),
+            ] : [])
         case .controls:
             return [
-                Row(id: "touch", title: "Edit touch layout", kind: .action(destructive: false) { editor = .touch },
-                    detail: "Drag the on-screen buttons and joystick, change which key each one sends, resize them, or add your own."),
+                Row(id: "vpad", title: "Virtual Gamepad", kind: .toggle($virtualPad),
+                    detail: virtualPad ? "On: The on-screen controls act as a game controller (two sticks, A/B/X/Y, D-pad, bumpers, triggers). Use the game's controller mode. Applies on the next start."
+                                       : "Off: The on-screen controls send keyboard and mouse input. Turn on to use them as a game controller. Applies on the next start."),
+            ] + (virtualPad ? [
+                Row(id: "padstyle", title: "Gamepad Buttons", kind: .choice(["Xbox", "PlayStation"], Binding(get: { padStyle }, set: { padStyle = $0; PadCatalog.setStyle($0) })),
+                    detail: padStyle == 1 ? "PlayStation: Buttons are labelled like a DualSense (✕ ○ □ △, L1/R1, L2/R2, Create, Options). They send the same input as the Xbox names."
+                                          : "Xbox: Buttons are labelled like an Xbox controller (A B X Y, LB/RB, LT/RT, Back, Start). Switch to PlayStation to use DualSense names."),
+            ] : []) + (virtualPad ? [] : [
+                Row(id: "twofinger", title: "Two-Finger Zoom", kind: .toggle($twoFingerZoom),
+                    detail: "Two fingers landing together on empty screen scroll the game's zoom. Turn off if it triggers by accident. Applies on the next start."),
+            ]) + [
+                Row(id: virtualPad ? "padedit" : "touch", title: virtualPad ? "Edit gamepad layout" : "Edit touch layout", kind: .action(destructive: false) { editor = virtualPad ? .pad : .touch },
+                    detail: virtualPad ? "Drag the gamepad controls, change what each one does, resize them, or add your own."
+                                       : "Drag the on-screen buttons and joystick, change which key each one sends, resize them, or add your own."),
+            ] + [
                 Row(id: "n", title: "The on-screen controls hide automatically while a controller, or a keyboard and mouse together, are connected. Changes apply next time the game starts.", kind: .info),
             ]
         case .jit:
             var r = [Row(id: "setup", title: "Setup guide", kind: .action(destructive: false) { editor = .setup },
                          detail: "Game files, Developer Mode and JIT in one place."),
                      Row(id: "method", title: "JIT Mode", kind: .choice(["Manual", "Built-in"], $jitMethod),
-                         detail: jitMethod == 0 ? "Manual: After pressing Play, run the ZomIOS script in StikDebug."
+                         detail: jitMethod == 0 ? "Manual: After pressing Play, run the pziOS script in StikDebug."
                                                 : "Built-in: Attaches automatically. Needs a pairing file, LocalDevVPN connected and Developer Mode on.")]
-            r.append(Row(id: "jitc", title: "JIT Compiler", kind: .choice(["C1", "C1+C2 gentle", "C1+C2 full"], forced($jitCompiler, 0)), detail: lockNote + jitCompilerDetail, locked: lowMem))
+            r.append(Row(id: "jitc", title: "JIT Compiler", kind: .choice(["C1", "C1+C2 gentle", "C1+C2 full"], $jitCompiler), detail: jitCompilerDetail))
             if jitMethod == 1 {
                 if model.jitAvailable {
                     r += [Row(id: "pair", title: model.pairingStatus, kind: .info),
@@ -609,15 +640,31 @@ struct SettingsView: View {
             }
             return r
         case .tools:
-            return [Row(id: "w", title: "Developer use only. These start the JVM in test modes.", kind: .info),
+            return [Row(id: "w", title: "Developer use only.", kind: .info),
                     Row(id: "aspect", title: "Simulate Aspect Ratio", kind: .choice(["Off", "4:3", "3:2", "16:10", "16:9"], $simAspect),
                         detail: "Makes the game think the screen has another shape, stretched over this one, to check its menus and HUD for iPad screens. 4:3 is an iPad Pro 13\". Set UI Margins to Off while testing."),
-                    Row(id: "lowmem", title: "Low Memory Mode", kind: .toggle($lowMem),
-                        detail: "Experimental. Runs with the smallest memory settings (Low memory limit, pzGC, Strong texture compression, ASTC on, no HD textures, C1 only, frame pool) and locks those settings. In testing it used about 4.3 GB, against about 5 GB at the defaults. Expect softer textures and more GC hitches."),
-                    Row(id: "framepool", title: "Frame Autorelease Pool (Experimental)", kind: .toggle(forced($framePool, true)),
-                        detail: lockNote + "Frees the graphics layer's per-frame temporary objects at the end of each frame. In testing it removed a steady memory climb (about 170 MB less after 2 to 3 minutes). Applies the next time the game starts.", locked: lowMem),
+                    Row(id: "framepool", title: "Frame Autorelease Pool (Experimental)", kind: .toggle($framePool),
+                        detail: "Frees the graphics layer's per-frame temporary objects at the end of each frame. In testing it removed a steady memory climb (about 170 MB less after 2 to 3 minutes). Applies the next time the game starts."),
+                    Row(id: "zinkprobe", title: zinkRunning ? "Zink Probe: running…" : "Zink Probe", kind: .action(destructive: false) {
+                        guard !zinkRunning else { return }
+                        zinkRunning = true; zinkResult = ""
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            var buf = [CChar](repeating: 0, count: 16384)
+                            _ = zomZinkProbe(&buf, buf.count)
+                            let text = String(cString: buf)
+                            try? text.write(to: GameFiles.documents.appendingPathComponent("zink-probe.txt"), atomically: true, encoding: .utf8)
+                            DispatchQueue.main.async { zinkResult = text; zinkRunning = false }
+                        }
+                    }, detail: "Loads Mesa Zink (OpenGL on Vulkan) over MoltenVK, creates an OpenGL 4.5 context and tests the features the Viewpoint mod needs. Takes a few seconds. The report is also saved as zink-probe.txt in the app's folder."),
+                    Row(id: "zinkproberes", title: zinkResult.isEmpty ? "Zink Probe result appears here." : zinkResult, kind: .info),
                     Row(id: "memlog", title: "Log Memory Use", kind: .toggle($memLog),
                         detail: "Writes the app's memory footprint to jvm.log every 5 seconds, split into Java heap, graphics and native memory."),
+                    Row(id: "zinkbackend", title: "Graphics Backend: Zink (Experimental)", kind: .toggle($zinkBackend),
+                        detail: "Runs the game on Mesa Zink over MoltenVK (desktop OpenGL 4.5) instead of the normal graphics layer, for mods that need it, such as Viewpoint. Experimental: slower than the normal path and uses more memory. Applies on the next start."),
+                    Row(id: "zinklog", title: "Zink Detailed Log", kind: .toggle($zinkLog),
+                        detail: "With the Zink backend on, writes frame timing, draw and pipeline counts and graphics limits to the log every few seconds (Log tab, or jvm.log). Please attach it when reporting performance. Applies on the next start."),
+                    Row(id: "zombiebuddy", title: "ZombieBuddy", kind: .toggle($zombieBuddy),
+                        detail: "Adds -javaagent:ZombieBuddy.jar when the game starts. Put ZombieBuddy.jar in the game folder (Files, pziOS, game); if it isn't there the setting is skipped. Applies on the next start."),
                     Row(id: "resetargs", title: "Reset launch arguments to the default", kind: .action(destructive: true) {
                         try? FileManager.default.removeItem(at: GameFiles.documents.appendingPathComponent("launch.args")) },
                         detail: "Deletes Documents/launch.args. The built-in default is written again the next time the game starts.")]
@@ -653,7 +700,7 @@ struct SettingsView: View {
             if case .success(let url) = result { model.onImportPairing?(url) }
         }
         .fullScreenCover(item: $editor) { e in
-            switch e { case .touch: TouchLayoutEditor(); case .margins: ScreenMarginEditor(); case .setup: SetupView(model: model, pad: pad) }
+            switch e { case .touch: TouchLayoutEditor(); case .pad: TouchLayoutEditor(pad: true); case .margins: ScreenMarginEditor(); case .setup: SetupView(model: model, pad: pad) }
         }
         .alert("Developer Tools", isPresented: $confirmDev) {
             Button("Enable") { devTools = true }
@@ -715,7 +762,6 @@ struct SettingsView: View {
         }
     }
 
-    private func run(_ mode: Int) { dismiss(); onRun(mode) }
 
     private func handle(_ k: PadKey) {
         switch k {
@@ -821,6 +867,6 @@ private struct LogView: View {
 #Preview("Home - 15 Plus 932x430", traits: .fixedLayout(width: 932, height: 430)) { LauncherView(model: LauncherModel(), onRun: { _ in }) }
 #Preview("Home - iPad 11 1194x834", traits: .fixedLayout(width: 1194, height: 834)) { LauncherView(model: LauncherModel(), onRun: { _ in }) }
 #Preview("Home - iPad 13 1376x1032", traits: .fixedLayout(width: 1376, height: 1032)) { LauncherView(model: LauncherModel(), onRun: { _ in }) }
-#Preview("Settings - Pro Max", traits: .fixedLayout(width: 956, height: 440)) { SettingsView(model: LauncherModel(), onRun: { _ in }, pad: PadNav()) }
-#Preview("Settings - iPhone 18", traits: .fixedLayout(width: 874, height: 402)) { SettingsView(model: LauncherModel(), onRun: { _ in }, pad: PadNav()) }
-#Preview("Settings - iPad 13", traits: .fixedLayout(width: 1376, height: 1032)) { SettingsView(model: LauncherModel(), onRun: { _ in }, pad: PadNav()) }
+#Preview("Settings - Pro Max", traits: .fixedLayout(width: 956, height: 440)) { SettingsView(model: LauncherModel(), pad: PadNav()) }
+#Preview("Settings - iPhone 18", traits: .fixedLayout(width: 874, height: 402)) { SettingsView(model: LauncherModel(), pad: PadNav()) }
+#Preview("Settings - iPad 13", traits: .fixedLayout(width: 1376, height: 1032)) { SettingsView(model: LauncherModel(), pad: PadNav()) }

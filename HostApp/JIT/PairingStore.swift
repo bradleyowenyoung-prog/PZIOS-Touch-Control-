@@ -28,7 +28,6 @@ enum PairingStore {
         return SecItemAdd(q as CFDictionary, nil) == errSecSuccess
     }
 
-    static func delete() { SecItemDelete(base as CFDictionary) }
 
     static var exists: Bool { load() != nil }
 

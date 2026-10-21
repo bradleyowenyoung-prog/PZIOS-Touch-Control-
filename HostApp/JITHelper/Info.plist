@@ -28,9 +28,9 @@
 			<string>FALSEPREDICATE</string>
 		</dict>
 		<key>NSExtensionContextClass</key>
-		<string>NSExtensionContext</string>
+		<string>ZomDonorVendorContext</string>
 		<key>NSExtensionContextHostClass</key>
-		<string>NSExtensionContext</string>
+		<string>ZomDonorHostContext</string>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.ar.viewer</string>
 		<key>NSExtensionPrincipalClass</key>

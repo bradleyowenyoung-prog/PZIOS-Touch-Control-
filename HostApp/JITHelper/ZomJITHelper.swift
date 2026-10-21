@@ -19,6 +19,8 @@ private enum StikJIT {
 import StikJIT
 #endif
 
+@_silgen_name("zom_ramdonor_serve") private func zomRamDonorServe(_ context: NSExtensionContext)
+
 private enum Work {
     /// StikJIT's calls are synchronous and blocking; keep them on one serial queue.
     static let queue = DispatchQueue(label: (Bundle.main.bundleIdentifier ?? "pziOS.jithelper") + ".queue")
@@ -67,6 +69,7 @@ private enum Work {
 @objc(ZomJITHelperHandler)
 final class ZomJITHelperHandler: NSObject, NSExtensionRequestHandling {
     func beginRequest(with context: NSExtensionContext) {
+        if let first = context.inputItems.first as? NSExtensionItem, first.userInfo?["donor"] != nil { zomRamDonorServe(context); return }      // experimental RAM donor (private tree only)
         let data = (context.inputItems.first as? NSExtensionItem)?.userInfo?[ZomJITRequest.itemKey] as? Data
         Work.queue.async {
             let response: ZomJITRequest.Response

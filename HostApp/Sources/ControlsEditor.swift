@@ -6,7 +6,7 @@ import UIKit
 // MARK: - Touch layout model
 
 struct TouchItem: Codable, Identifiable, Equatable {
-    enum Kind: String, Codable { case stick, aimstick, key, mouse, keyboard, hide, mode }
+    enum Kind: String, Codable { case stick, aimstick, autoattack, key, mouse, keyboard, hide, mode, padstick, padbtn, padtrig }     // pad*: virtual gamepad controls
     var id: String
     var kind: Kind
     var label: String
@@ -15,7 +15,7 @@ struct TouchItem: Codable, Identifiable, Equatable {
     var y: Double
     var size: Double         // points
     var locked: Bool { kind == .hide || kind == .mode }
-    var isStick: Bool { kind == .stick || kind == .aimstick }   // HIDE and PAD/TCH can't be removed, or you could lose the controls
+    var isStick: Bool { kind == .stick || kind == .aimstick || kind == .padstick }   // HIDE and PAD/TCH can't be removed, or you could lose the controls
 }
 
 struct TouchLayout: Codable, Equatable {
@@ -23,16 +23,38 @@ struct TouchLayout: Codable, Equatable {
     var items: [TouchItem]
 }
 
+/// A named copy of a layout the player saved to come back to later (one list for keyboard and mouse, one for the virtual gamepad).
+struct TouchPreset: Codable, Identifiable, Equatable {
+    var id = UUID().uuidString
+    var name: String
+    var layout: TouchLayout
+}
+
+enum TouchPresetStore {
+    private static func key(_ pad: Bool) -> String { pad ? "zom.padPresets" : "zom.touchPresets" }
+    static func load(pad: Bool) -> [TouchPreset] {
+        guard let s = UserDefaults.standard.string(forKey: key(pad)), let d = s.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([TouchPreset].self, from: d)) ?? []
+    }
+    static func save(_ list: [TouchPreset], pad: Bool) {
+        if let d = try? JSONEncoder().encode(list), let s = String(data: d, encoding: .utf8) { UserDefaults.standard.set(s, forKey: key(pad)) }
+    }
+}
+
 enum TouchLayoutStore {
     static let key = "zom.touchLayout"
+    static let padKey = "zom.padLayout"      // the virtual gamepad's own layout
 
-    static func load() -> TouchLayout {
-        if let s = UserDefaults.standard.string(forKey: key), let d = s.data(using: .utf8),
-           let l = try? JSONDecoder().decode(TouchLayout.self, from: d), !l.items.isEmpty { return l }
-        return defaultLayout
+    static func load(pad: Bool = false) -> TouchLayout {
+        if let s = UserDefaults.standard.string(forKey: pad ? padKey : key), let d = s.data(using: .utf8),
+           var l = try? JSONDecoder().decode(TouchLayout.self, from: d) {
+            l.items.removeAll { $0.kind == .autoattack }       // a test build once had an auto-attack button; the aim stick's Auto mode replaced it
+            if !l.items.isEmpty { return l }
+        }
+        return pad ? padDefaultLayout : defaultLayout
     }
-    static func save(_ l: TouchLayout) {
-        if let d = try? JSONEncoder().encode(l), let s = String(data: d, encoding: .utf8) { UserDefaults.standard.set(s, forKey: key) }
+    static func save(_ l: TouchLayout, pad: Bool = false) {
+        if let d = try? JSONEncoder().encode(l), let s = String(data: d, encoding: .utf8) { UserDefaults.standard.set(s, forKey: pad ? padKey : key) }
     }
     static func reset() { UserDefaults.standard.removeObject(forKey: key) }
 
@@ -67,10 +89,38 @@ enum TouchLayoutStore {
         ])
     }
 
+    /// The default virtual gamepad (positions worked out for a 956x440 pt screen): sticks at the bottom corners, D-pad and A/B/X/Y between them,
+    /// shoulder and trigger buttons on the top corners, Back and Start at the top centre.
+    static var padDefaultLayout: TouchLayout {
+        let W = 956.0, H = 440.0, L = 20.0, R = 20.0, B = 14.0, T = 10.0
+        func item(_ id: String, _ kind: TouchItem.Kind, _ label: String, _ code: Int, _ px: Double, _ py: Double, _ size: Double) -> TouchItem {
+            TouchItem(id: id, kind: kind, label: label, code: code, x: px / W, y: py / H, size: size)
+        }
+        func pb(_ c: Int) -> String { PadCatalog.buttons[c].2 }        // face labels in the chosen style (Xbox / PlayStation)
+        func pt(_ c: Int) -> String { PadCatalog.triggers[c].2 }
+        let dx = L + 250, dy = H - B - 70            // D-pad centre
+        let bx = W - R - 290, by = H - B - 70        // A/B/X/Y centre
+        return TouchLayout(items: [
+            item("ls", .padstick, "", 0, L + 70, H - B - 70, 130),
+            item("rs", .padstick, "", 1, W - R - 75, H - B - 75, 130),
+            item("du", .padbtn, pb(11), 11, dx, dy - 46, 44), item("dd", .padbtn, pb(13), 13, dx, dy + 46, 44),
+            item("dl", .padbtn, pb(14), 14, dx - 46, dy, 44), item("dr", .padbtn, pb(12), 12, dx + 46, dy, 44),
+            item("ba", .padbtn, pb(0), 0, bx, by + 46, 52), item("bb", .padbtn, pb(1), 1, bx + 46, by, 52),
+            item("bx", .padbtn, pb(2), 2, bx - 46, by, 52), item("by", .padbtn, pb(3), 3, bx, by - 46, 52),
+            item("lt", .padtrig, pt(0), 0, L + 34, T + 30, 54), item("lb", .padbtn, pb(4), 4, L + 100, T + 30, 54),
+            item("rt", .padtrig, pt(1), 1, W - R - 212, T + 30, 54), item("rb", .padbtn, pb(5), 5, W - R - 146, T + 30, 54),
+            item("back", .padbtn, pb(6), 6, W / 2 - 40, T + 26, 44), item("start", .padbtn, pb(7), 7, W / 2 + 40, T + 26, 44),
+            item("l3", .padbtn, pb(9), 9, L + 70, H - B - 168, 40), item("r3", .padbtn, pb(10), 10, W - R - 75, H - B - 173, 40),
+            item("hide", .hide, "HIDE", 0, W - R - 28, T + 26, 44),
+            item("mode", .mode, "PAD", 0, W - R - 80, T + 26, 44),
+        ])
+    }
+
     /// Run when the launcher opens, so the game always has a saved layout to read: the default if there is none, and for a layout saved before the
     /// aiming stick existed, the stick is added once (move it or delete it in the editor).
     static func ensureSaved() {
         let d = UserDefaults.standard
+        if d.string(forKey: padKey) == nil { save(padDefaultLayout, pad: true) }
         if d.string(forKey: key) == nil { save(defaultLayout); d.set(true, forKey: migratedKey); return }
         guard !d.bool(forKey: migratedKey) else { return }
         var l = load()
@@ -105,15 +155,53 @@ enum KeyCatalog {
     }
 }
 
+/// Names of the standard gamepad buttons (GLFW gamepad order) in the two labelling styles; style 0 = Xbox, 1 = PlayStation (DualSense).
+enum PadCatalog {
+    static let styleKey = "zom.padStyle"
+    static var style: Int { UserDefaults.standard.integer(forKey: styleKey) == 1 ? 1 : 0 }
+    // index = GLFW button: (menu name, face label) for Xbox, then for PlayStation
+    private static let xbox: [(String, String)] = [("A", "A"), ("B", "B"), ("X", "X"), ("Y", "Y"), ("Left bumper (LB)", "LB"), ("Right bumper (RB)", "RB"),
+        ("Back", "BACK"), ("Start", "STRT"), ("Guide", "GUIDE"), ("Left stick click (L3)", "L3"), ("Right stick click (R3)", "R3"),
+        ("D-pad up", "↑"), ("D-pad right", "→"), ("D-pad down", "↓"), ("D-pad left", "←")]
+    private static let playstation: [(String, String)] = [("Cross (✕)", "✕"), ("Circle (○)", "○"), ("Square (□)", "□"), ("Triangle (△)", "△"),
+        ("L1", "L1"), ("R1", "R1"), ("Create", "CRT"), ("Options", "OPT"), ("PS button", "PS"), ("Left stick click (L3)", "L3"), ("Right stick click (R3)", "R3"),
+        ("D-pad up", "↑"), ("D-pad right", "→"), ("D-pad down", "↓"), ("D-pad left", "←")]
+    private static let triggersXbox: [(String, String)] = [("Left trigger (LT)", "LT"), ("Right trigger (RT)", "RT")]
+    private static let triggersPS: [(String, String)] = [("L2", "L2"), ("R2", "R2")]
+    static var buttons: [(String, Int, String)] { (style == 1 ? playstation : xbox).enumerated().map { ($0.element.0, $0.offset, $0.element.1) } }
+    static var triggers: [(String, Int, String)] { (style == 1 ? triggersPS : triggersXbox).enumerated().map { ($0.element.0, $0.offset, $0.element.1) } }
+    static func name(for item: TouchItem) -> String {
+        if item.kind == .padtrig { return triggers.first { $0.1 == item.code }?.0 ?? "Trigger" }
+        return buttons.first { $0.1 == item.code }?.0 ?? "Button"
+    }
+    static func label(for item: TouchItem) -> String {
+        item.kind == .padtrig ? (triggers.first { $0.1 == item.code }?.2 ?? item.label) : (buttons.first { $0.1 == item.code }?.2 ?? item.label)
+    }
+    /// Sets the style and renames the buttons of the saved gamepad layout to match (positions and everything else stay).
+    static func setStyle(_ v: Int) {
+        UserDefaults.standard.set(v == 1 ? 1 : 0, forKey: styleKey)
+        var l = TouchLayoutStore.load(pad: true)
+        for i in l.items.indices where l.items[i].kind == .padbtn || l.items[i].kind == .padtrig { l.items[i].label = label(for: l.items[i]) }
+        TouchLayoutStore.save(l, pad: true)
+    }
+}
+
 // MARK: - Touch layout editor
 
 struct TouchLayoutEditor: View {
+    var pad = false            // true: edit the virtual gamepad layout instead of the keyboard and mouse one
     @Environment(\.dismiss) private var dismiss
-    @State private var layout = TouchLayoutStore.load()
+    @State private var layout: TouchLayout
+    init(pad: Bool = false) { self.pad = pad; _layout = State(initialValue: TouchLayoutStore.load(pad: pad)) }
     @State private var selected: String?
     @State private var panelOffset = CGSize.zero
     @State private var panelDrag = CGSize.zero
     @State private var saveItem: DispatchWorkItem?
+    @AppStorage("zom.aimAttackMode") private var aimAttackMode = 0          // aim joystick: 0 no attack, 1 one attack on release, 2 auto-attack while pushed
+    @AppStorage("zom.mouseSens") private var mouseSens = 1.0       // cursor speed of PAD mode (1.0 = one point of cursor per point of finger); applies on the next start
+    @State private var presets: [TouchPreset] = []
+    @State private var naming = false
+    @State private var newName = ""
 
     private var selectedIndex: Int? { layout.items.firstIndex { $0.id == selected } }
 
@@ -150,11 +238,25 @@ struct TouchLayoutEditor: View {
         .persistentSystemOverlays(.hidden)
         .onChange(of: layout) { _, l in      // debounced: encoding on every frame of a drag made the editor sluggish
             saveItem?.cancel()
-            let work = DispatchWorkItem { TouchLayoutStore.save(l) }
+            let work = DispatchWorkItem { TouchLayoutStore.save(l, pad: pad) }
             saveItem = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
         }
-        .onDisappear { saveItem?.cancel(); TouchLayoutStore.save(layout) }
+        .onDisappear { saveItem?.cancel(); TouchLayoutStore.save(layout, pad: pad) }
+        .onAppear { presets = TouchPresetStore.load(pad: pad) }
+        .alert("Save layout", isPresented: $naming) {
+            TextField("Name", text: $newName)
+            Button("Save") { saveCurrent(as: newName) }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Saves the controls as they are now. Saving under an existing name replaces it.") }
+    }
+
+    private func saveCurrent(as name: String) {
+        let n = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(24))
+        guard !n.isEmpty else { return }
+        if let i = presets.firstIndex(where: { $0.name.caseInsensitiveCompare(n) == .orderedSame }) { presets[i].layout = layout }
+        else { presets.append(TouchPreset(name: n, layout: layout)) }
+        TouchPresetStore.save(presets, pad: pad)
     }
 
     // MARK: panel
@@ -162,30 +264,60 @@ struct TouchLayoutEditor: View {
     private var panel: some View {
         VStack(spacing: 10) {
             HStack {
-                Text("Touch Controls").font(.system(size: 15, weight: .bold))
+                Text(pad ? "Virtual Gamepad" : "Touch Controls").font(.system(size: 15, weight: .bold))
                 Spacer()
                 Image(systemName: "line.3.horizontal").foregroundStyle(.white.opacity(0.4))
             }
             .contentShape(Rectangle())
-            .gesture(DragGesture().onChanged { panelDrag = $0.translation }.onEnded { v in
+            .gesture(DragGesture(coordinateSpace: .named("canvas")).onChanged { panelDrag = $0.translation }.onEnded { v in
                 panelOffset.width += v.translation.width; panelOffset.height += v.translation.height; panelDrag = .zero
             })
 
             HStack(spacing: 8) {
                 Menu {
-                    Button("Key button") { add(.key, label: "E", code: 69) }
-                    Button("Mouse button") { add(.mouse, label: "CLK", code: 0) }
-                    if !layout.items.contains(where: { $0.kind == .stick }) { Button("Joystick") { add(.stick, label: "", code: 0, size: 130) } }
-                    if !layout.items.contains(where: { $0.kind == .aimstick }) { Button("Aim joystick") { add(.aimstick, label: "", code: 0, size: 130) } }
-                    if !layout.items.contains(where: { $0.kind == .keyboard }) { Button("Keyboard toggle") { add(.keyboard, label: "KB", code: 0, size: 44) } }
+                    if pad {
+                        Button("Gamepad button") { add(.padbtn, label: PadCatalog.buttons[0].2, code: 0) }
+                        Button("Trigger") { add(.padtrig, label: PadCatalog.triggers[0].2, code: 0, size: 54) }
+                        Button("Stick") { add(.padstick, label: "", code: 0, size: 130) }
+                    } else {
+                        Button("Key button") { add(.key, label: "E", code: 69) }
+                        Button("Mouse button") { add(.mouse, label: "CLK", code: 0) }
+                        if !layout.items.contains(where: { $0.kind == .stick }) { Button("Joystick") { add(.stick, label: "", code: 0, size: 130) } }
+                        if !layout.items.contains(where: { $0.kind == .aimstick }) { Button("Aim joystick") { add(.aimstick, label: "", code: 0, size: 130) } }
+                        if !layout.items.contains(where: { $0.kind == .keyboard }) { Button("Keyboard toggle") { add(.keyboard, label: "KB", code: 0, size: 44) } }
+                    }
                 } label: { pill("Add", system: "plus") }
-                Button { layout = TouchLayoutStore.defaultLayout; TouchLayoutStore.save(layout); selected = nil } label: { pill("Reset", system: "arrow.counterclockwise") }
+                Button { layout = pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout; TouchLayoutStore.save(layout, pad: pad); selected = nil } label: { pill("Reset", system: "arrow.counterclockwise") }
+                Menu {
+                    Button { newName = ""; naming = true } label: { Label("Save current layout…", systemImage: "square.and.arrow.down") }
+                    if !presets.isEmpty { Divider() }
+                    ForEach(presets) { p in
+                        Menu(p.name) {
+                            Button { layout = p.layout; selected = nil } label: { Label("Load", systemImage: "arrow.down.doc") }
+                            Button { if let n = presets.firstIndex(where: { $0.id == p.id }) { presets[n].layout = layout; TouchPresetStore.save(presets, pad: pad) } } label: { Label("Replace with current", systemImage: "square.and.arrow.down") }
+                            Button(role: .destructive) { presets.removeAll { $0.id == p.id }; TouchPresetStore.save(presets, pad: pad) } label: { Label("Delete", systemImage: "trash") }
+                        }
+                    }
+                } label: { pill("Saved", system: "square.stack") }
                 Button { dismiss() } label: { pill("Done", system: "checkmark", filled: true) }
             }
 
             HStack {
                 Text("Opacity").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
                 Slider(value: $layout.opacity, in: 0.3...1).tint(.white)
+            }
+            if !pad {
+                HStack {
+                    Text("Sensitivity").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                    Slider(value: $mouseSens, in: 0.2...4, step: 0.1).tint(.white)
+                    Text(String(format: "%.1fx", mouseSens)).font(.system(size: 12, design: .monospaced)).foregroundStyle(.white.opacity(0.6)).frame(width: 36, alignment: .trailing)
+                }
+                if layout.items.contains(where: { $0.kind == .aimstick }) {
+                    HStack {
+                        Text("Aim stick attack").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                        Picker("", selection: $aimAttackMode) { Text("Off").tag(0); Text("Release").tag(1); Text("Auto").tag(2) }.pickerStyle(.segmented)
+                    }
+                }
             }
 
             if let i = selectedIndex { inspector(i) }
@@ -199,7 +331,28 @@ struct TouchLayoutEditor: View {
         let item = layout.items[i]
         Divider().overlay(Color.white.opacity(0.12))
         VStack(alignment: .leading, spacing: 8) {
-            Text(item.kind == .stick ? "Joystick" : item.kind == .aimstick ? "Aim joystick" : item.label.isEmpty ? "Control" : item.label).font(.system(size: 13, weight: .semibold))
+            Text(item.kind == .stick ? "Joystick" : item.kind == .aimstick ? "Aim joystick" : item.kind == .padstick ? (item.code == 0 ? "Left stick" : "Right stick") : item.label.isEmpty ? "Control" : item.label).font(.system(size: 13, weight: .semibold))
+            if item.kind == .padbtn || item.kind == .padtrig {
+                HStack {
+                    Text("Acts as").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                    Spacer()
+                    Menu {
+                        ForEach(PadCatalog.buttons, id: \.1) { e in Button(e.0) { layout.items[i].kind = .padbtn; layout.items[i].code = e.1; layout.items[i].label = e.2 } }
+                        ForEach(PadCatalog.triggers, id: \.1) { e in Button(e.0) { layout.items[i].kind = .padtrig; layout.items[i].code = e.1; layout.items[i].label = e.2 } }
+                    } label: {
+                        Text(PadCatalog.name(for: item)).font(.system(size: 13, weight: .semibold)).padding(.horizontal, 12).frame(height: 28)
+                            .background(Color.white.opacity(0.12), in: Capsule())
+                    }
+                }
+            }
+            if item.kind == .padstick {
+                HStack {
+                    Text("Acts as").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                    Spacer()
+                    Picker("", selection: Binding(get: { layout.items[i].code }, set: { layout.items[i].code = $0 })) { Text("Left").tag(0); Text("Right").tag(1) }
+                        .pickerStyle(.segmented).frame(width: 140)
+                }
+            }
             if item.kind == .key || item.kind == .mouse {
                 HStack {
                     Text("Sends").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
@@ -245,7 +398,7 @@ struct TouchLayoutEditor: View {
     }
 
     private func pill(_ title: String, system: String, filled: Bool = false) -> some View {
-        Label(title, systemImage: system).font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 32)
+        Label(title, systemImage: system).font(.system(size: 13, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.75).frame(maxWidth: .infinity).frame(height: 32)
             .background(filled ? Color.white : Color.white.opacity(0.12), in: Capsule()).foregroundStyle(filled ? Color.black : .white)
     }
 

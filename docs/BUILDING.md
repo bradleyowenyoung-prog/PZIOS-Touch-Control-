@@ -30,6 +30,16 @@ ASTC_SRC=/path/to/astc-encoder GL4ES_DYLIB=/path/to/libgl4es_114.dylib native/bu
 
 This builds `libglfw`, `libEGLproxy`, `libfmodhal` (twice, as `libfmodhal_ca` too) and `libGLshim` into `HostApp/runtime/natives/`.
 
+## 3b. Optional: the Zink graphics backend (experimental)
+Developer Tools has a switch "Graphics Backend: Zink (Experimental)" that runs the game on Mesa's Zink (OpenGL 4.5 on Vulkan) over MoltenVK (Vulkan on Metal) instead of gl4es + MetalANGLE. It exists for mods that need desktop OpenGL 4.5 (for example Viewpoint). It is slower and uses more memory than the normal path, so it is off by default. Without the three libraries below the switch does nothing useful, so leave them out if you do not want it.
+
+Put these in `HostApp/runtime/natives/zink/`:
+1. `libMoltenVK.dylib`: MoltenVK (commit `5189f8d`, Apache-2.0), patched with `patches/MoltenVK-5189f8d-pzios.diff` (reports up to 64 samplers per stage when Metal argument buffers are in use, because some mods need more than 16). Build: clone, `git apply` the patch, `./fetchDependencies --ios`, `make ios`, then copy `Package/Release/MoltenVK/dynamic/MoltenVK.xcframework/ios-arm64/MoltenVK.framework/MoltenVK` and name it `libMoltenVK.dylib`.
+2. `libEGL.1.dylib` and `libgallium-26.2.5.dylib`: Mesa 26.2.5 (MIT), patched with `patches/mesa-26.2.5-zink-pzios.diff` (`patch -p1`). Cross-compile for iOS with meson (Python 3.10+, `mako`, `pyyaml`, `ply`, a recent bison and flex) using a cross file that targets `iphoneos` arm64 with `system = 'darwin'`:
+   `meson setup build-ios --cross-file ios-cross.txt -Dgallium-drivers=zink -Dvulkan-drivers= -Dplatforms=macos -Dglx=disabled -Degl=enabled -Dllvm=disabled -Dgbm=disabled -Dgles1=disabled -Dgles2=enabled -Dbuildtype=release -Dvideo-codecs= -Dtools= -Dzstd=disabled -Dspirv-tools=disabled -Dlibunwind=disabled -Dglvnd=disabled -Dmoltenvk-dir=<absolute path of MoltenVK's Package/Release/MoltenVK>`
+   with `-DVK_USE_PLATFORM_IOS_MVK` added to the C, C++ and Objective-C arguments and `-lobjc -framework Foundation` to the link arguments, then `ninja -C build-ios`. Copy `src/egl/libEGL.1.dylib` and `src/gallium/targets/dri/libgallium-26.2.5.dylib`, and give both an `@loader_path` rpath (`install_name_tool -add_rpath @loader_path`; remove libEGL's build-tree rpath).
+3. `libGLzink.dylib`: built by `native/build-natives.sh` (sources in `native/glzink`; `gen.py` regenerates `glzink.c` from Mesa's `GL/gl.h` and `GL/glext.h`).
+
 ## 4. The game's own native libraries
 
 Run `scripts/retag.sh <in.dylib> <out.dylib>` on every `.dylib` in the game's `Contents/Java` (and the lwjgl/FMOD libraries it ships), writing the results into `HostApp/runtime/natives/`.
@@ -43,7 +53,7 @@ Get `StikJIT.xcframework` from the StikJIT project (https://github.com/StikDebug
 
 ```
 cd HostApp && xcodegen generate
-open ZomIOS.xcodeproj      # scheme ZomIOS (device) or ZomUIPreview (simulator, launcher UI only)
+open pziOS.xcodeproj      # scheme pziOS (device) or ZomUIPreview (simulator, launcher UI only)
 ```
 
 Set your own team and bundle identifier in `project.yml`. Install, then use the in-app Setup guide for the game files and JIT.

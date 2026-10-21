@@ -1,8 +1,8 @@
 #!/bin/bash
-# sign-app.sh <ZomIOS.app> <identity or - for ad hoc> [entitlements.plist]
+# sign-app.sh <pziOS.app> <identity or - for ad hoc> [entitlements.plist]
 # Signs everything inside the app, innermost first, then the helper and the app with their entitlements.
 # Entitlements: the third argument for the app if given; else, when the bundle contains embedded.mobileprovision and a real identity is used, the usable ones from that
-# profile (application-identifier, team, get-task-allow, increased memory limit); else the ones already in the app, else HostApp/ZomIOS.entitlements.
+# profile (application-identifier, team, get-task-allow, increased memory limit); else the ones already in the app, else HostApp/pziOS.entitlements.
 # get-task-allow is always added for ad-hoc signing (the built-in JIT attaches a debugger). Sideloading tools replace all of this with the user's own signature.
 set -e
 APP=${1:?app}; ID=${2:--}; GIVEN=${3:-}; ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -19,7 +19,7 @@ keep = ["application-identifier", "com.apple.developer.team-identifier", "get-ta
 sys.stdout.buffer.write(plistlib.dumps({k: e[k] for k in keep if k in e}))' > "$OUT"
   else
     /usr/bin/codesign -d --entitlements - --xml "$B" > "$OUT" 2>/dev/null || true
-    [ -s "$OUT" ] || { [ "$B" = "$APP" ] && cp "$ROOT/HostApp/ZomIOS.entitlements" "$OUT"; } || true
+    [ -s "$OUT" ] || { [ "$B" = "$APP" ] && cp "$ROOT/HostApp/pziOS.entitlements" "$OUT"; } || true
     [ -s "$OUT" ] || printf '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict/></plist>' > "$OUT"
     if [ "$ID" = "-" ]; then
       /usr/libexec/PlistBuddy -c "Add :get-task-allow bool true" "$OUT" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :get-task-allow true" "$OUT"

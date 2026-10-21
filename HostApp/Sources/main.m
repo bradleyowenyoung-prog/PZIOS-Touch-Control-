@@ -1,4 +1,4 @@
-// ZomIOS host: boots the bundled iOS OpenJDK in-process via libjli's JLI_Launch.
+// pziOS host: boots the bundled iOS OpenJDK in-process via libjli's JLI_Launch.
 // The JVM can only be created once per process, so each run needs an app relaunch.
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -15,14 +15,26 @@
 #import <mach-o/dyld.h>
 #import <mach-o/getsect.h>
 #import <stdatomic.h>
-static BOOL low_mem_mode(void);
 #ifdef ZOM_UI_PREVIEW
 #import "ZomUIPreview-Swift.h"
 #else
-#import "ZomIOS-Swift.h"
+#import "pziOS-Swift.h"
 #endif
 
+extern int csops(pid_t pid, unsigned int ops, void *useraddr, size_t usersize);
+#define ZOM_CS_DEBUGGED 0x10000000
+static int pref_int(NSString *k, int def);
+// iOS older than 19 uses the JVM's classic JIT path (no debugger-provided memory); preference zom.classicJIT forces it (1) or the other path (0).
+static BOOL classic_jit(void) {
+    int forced = pref_int(@"zom.classicJIT", -1);
+    if (forced >= 0) return forced == 1;
+    if (@available(iOS 19.0, *)) return NO;
+    return YES;
+}
+// The debugger is attached (P_TRACED). On the classic path the script lets go again at once, and what stays is the CS_DEBUGGED code-signing flag that
+// allows the JIT, so that counts too.
 static BOOL debuggerAttached(void) {
+    if (classic_jit()) { uint32_t cs = 0; if (csops(getpid(), 0 /* CS_OPS_STATUS */, &cs, sizeof cs) == 0 && (cs & ZOM_CS_DEBUGGED)) return YES; }
     struct kinfo_proc info; size_t size = sizeof info; info.kp_proc.p_flag = 0;
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
     sysctl(mib, 4, &info, &size, NULL, 0);
@@ -69,13 +81,12 @@ static void log_memory(void) {
         printf("%s MB\n", line);
         return;
     }
-    printf("%s MB\n", line);
 }
 static void start_memory_logger(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         const char *e = getenv("ZOMIOS_MEMLOG"); double iv = e ? atof(e) : 0; if (iv <= 0) return;      // opt-in: @env ZOMIOS_MEMLOG=5 in launch.args
-        dispatch_queue_t q = dispatch_queue_create("zomios.memlog", DISPATCH_QUEUE_SERIAL);
+        dispatch_queue_t q = dispatch_queue_create("pzios.memlog", DISPATCH_QUEUE_SERIAL);
         dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
         dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), (uint64_t)(iv * NSEC_PER_SEC), NSEC_PER_SEC / 10);
         dispatch_source_set_event_handler(t, ^{ log_memory(); });
@@ -90,7 +101,6 @@ static NSString *const kPrefShrink = @"zom.textureShrink";     // 0 off, 1 balan
 static NSString *const kPrefHiRes = @"zom.hiResTexturePacks";   // BOOL: texture2x
 static NSString *const kPrefHeap = @"zom.heapLimit";           // 0 low (1.5 GB), 1 medium (2 GB), 2 high (2.5 GB)
 static int pref_int(NSString *k, int def) { id v = [NSUserDefaults.standardUserDefaults objectForKey:k]; return v ? [v intValue] : def; }
-static BOOL low_mem_mode(void) { return [NSUserDefaults.standardUserDefaults boolForKey:@"zom.lowMem"]; }     // developer low memory mode
 // Java heap ceiling presets: {-Xmx, -Xms} in MB. High is what the tuned 8 GB-class devices run; lower ones leave more room for textures and the OS.
 static const int kHeapMB[4][2] = { {1536, 512}, {2048, 768}, {2560, 1024}, {4096, 1536} };    // Very High is for devices with 12 GB of memory or more
 static const int kYoungMB[4] = { 128, 160, 176, 192 };                                       // young generation size for pzGC: small, so each pause stays about one frame
@@ -101,6 +111,9 @@ static int default_heap_mode(void) {      // same rule as defaultHeapMode() in L
 }
 static const char *shrink_env_value(int mode) { return mode <= 0 ? "0" : mode == 1 ? "7" : "3"; }   // gl4es LIBGL_SHRINK: 7 = only >512px (not render targets), 3 = everything >256px
 
+extern int zom_donor_prepare(uint64_t bytes, char *msg, size_t cap);      // Sources/RamDonorHost.m (private tree only)
+extern bool zom_donor_map(char *base, size_t size);
+
 // Rewrite keys in the game's options.ini (the game re-saves the whole file on exit, so we only touch our own keys).
 static void apply_game_options(NSString *docs) {
     NSString *dir = [docs stringByAppendingPathComponent:@"home/Zomboid"];
@@ -109,14 +122,17 @@ static void apply_game_options(NSString *docs) {
     NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] ?: @"";
     NSMutableArray<NSString *> *lines = [[txt componentsSeparatedByString:@"\n"] mutableCopy];
     if (lines.count && [lines.lastObject length] == 0) [lines removeLastObject];
-    NSDictionary<NSString *, NSString *> *want = @{ @"texture2x": (pref_int(kPrefHiRes, 0) && !low_mem_mode() && ZomGameFiles.has2xPacks) ? @"true" : @"false" };
+    // doVideoEffects stays off: the game's preview videos need its Bink library (libbink64), which is a macOS-only library we do not ship; with the game's
+    // default (on) a fresh install crashes at the main menu with "no bink64".
+    NSDictionary<NSString *, NSString *> *want = @{ @"texture2x": (pref_int(kPrefHiRes, 0) && ZomGameFiles.has2xPacks) ? @"true" : @"false",
+                                                    @"doVideoEffects": @"false" };
     for (NSString *key in want) {
         BOOL found = NO; NSString *prefix = [key stringByAppendingString:@"="];
         for (NSUInteger i = 0; i < lines.count; i++) if ([lines[i] hasPrefix:prefix]) { lines[i] = [prefix stringByAppendingString:want[key]]; found = YES; break; }
         if (!found) [lines addObject:[prefix stringByAppendingString:want[key]]];
     }
     [[[lines componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"] writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    printf("options.ini: texture2x=%s\n", want[@"texture2x"].UTF8String);
+    printf("options.ini: texture2x=%s doVideoEffects=%s\n", want[@"texture2x"].UTF8String, want[@"doVideoEffects"].UTF8String);
 }
 
 // UI margins: ship the safe-area Lua script into the game's client Lua folder and tell it how far to keep the UI from the screen edges.
@@ -129,16 +145,17 @@ static void install_ui_margin(NSString *docs, NSString *res) {
     if (level > 0) { NSArray<NSNumber *> *px = [ZomMargins gamePixelsWithLevel:level]; for (int i = 0; i < 4 && i < (int)px.count; i++) m[i] = px[i].intValue; }
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *dir = [docs stringByAppendingPathComponent:@"game/media/lua/client"];
-    NSString *src = [[NSBundle mainBundle] pathForResource:@"ZomIOSSafeArea" ofType:@"lua"];
+    NSString *src = [[NSBundle mainBundle] pathForResource:@"pziOSSafeArea" ofType:@"lua"];
     if (src && [fm fileExistsAtPath:dir]) {
-        NSString *dst = [dir stringByAppendingPathComponent:@"ZomIOSSafeArea.lua"];
+        [fm removeItemAtPath:[dir stringByAppendingPathComponent:@"ZomIOSSafeArea.lua"] error:nil];      // old name from earlier builds
+        NSString *dst = [dir stringByAppendingPathComponent:@"pziOSSafeArea.lua"];
         NSData *a = [NSData dataWithContentsOfFile:src], *b = [NSData dataWithContentsOfFile:dst];
         if (![a isEqualToData:b]) { [fm removeItemAtPath:dst error:nil]; [fm copyItemAtPath:src toPath:dst error:nil]; }
     }
     NSString *luaDir = [docs stringByAppendingPathComponent:@"home/Zomboid/Lua"];
     [fm createDirectoryAtPath:luaDir withIntermediateDirectories:YES attributes:nil error:nil];
     NSString *line = [NSString stringWithFormat:@"%d %d %d %d\n", m[0], m[1], m[2], m[3]];
-    [line writeToFile:[luaDir stringByAppendingPathComponent:@"zomios_ui_margin.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [line writeToFile:[luaDir stringByAppendingPathComponent:@"pzios_ui_margin.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
     printf("settings: UI margins %s (left %d, top %d, right %d, bottom %d game px), script %s\n", kName[level], m[0], m[1], m[2], m[3], src ? "installed" : "missing");
 }
 
@@ -169,10 +186,6 @@ static BOOL g_wantPointerLock;
 - (BOOL)prefersPointerLocked { return g_wantPointerLock; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }      // no swipe-home bar over the launcher or the game
 - (void)mouseStateChanged:(NSNotification *)n { g_wantPointerLock = [n.object boolValue]; [self setNeedsUpdateOfPrefersPointerLocked]; }
-
-- (UILabel *)labelText:(NSString *)t size:(CGFloat)sz weight:(UIFontWeight)w color:(UIColor *)c {
-    UILabel *l = [UILabel new]; l.text = t; l.font = [UIFont systemFontOfSize:sz weight:w]; l.textColor = c; l.numberOfLines = 0; return l;
-}
 
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -242,7 +255,7 @@ static BOOL g_wantPointerLock;
         char buf[2048]; ssize_t n;
         while ((n = read(rfd, buf, sizeof buf - 1)) > 0) {
             buf[n] = 0;
-            { static BOOL booted; if (!booted && strstr(buf, "version=") != NULL) { booted = YES; [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"zom.gcOK"]; } }   // the JVM got far enough that its collector works
+            { static BOOL booted; if (!booted && strstr(buf, "version=") != NULL) { booted = YES; [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"zom.gcOK"]; [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"zom.ramDonorOK"]; } }   // the JVM got far enough that its collector works
             if (lf) { fwrite(buf, 1, n, lf); fflush(lf); }
             [self append:[NSString stringWithUTF8String:buf] ?: @"<non-utf8>\n"];
         }
@@ -273,6 +286,9 @@ static BOOL g_wantPointerLock;
     setenv("HOME", docs.UTF8String, 1);
     setenv("TMPDIR", NSTemporaryDirectory().UTF8String, 1);
     printf("device: %s\n", ZomDevice.summary.UTF8String);
+#ifndef ZOM_UI_PREVIEW
+    printf("%s\n", ZomJITHost.diagnosticSummary.UTF8String);
+#endif
     printf("jre: %s\nmode: %s\n", jre.UTF8String, jit ? "JIT (TXM mirror-mapped)" : "interpreter");
     printf("memory: physical %.1f GB, available to app %.0f MB\n", NSProcessInfo.processInfo.physicalMemory / 1073741824.0, os_proc_available_memory() / 1048576.0);
 #ifndef ZOM_UI_PREVIEW
@@ -299,7 +315,7 @@ static BOOL g_wantPointerLock;
 
     void *h = dlopen(libjli.UTF8String, RTLD_NOW | RTLD_GLOBAL);
     if (!h) { printf("dlopen libjli failed: %s\n", dlerror()); return; }
-    if (low_mem_mode() || pref_int(@"zom.framePool", 0)) { setenv("ZOMIOS_FRAMEPOOL", "1", 1); printf("settings: per-frame autorelease pool on\n"); }
+    if (pref_int(@"zom.framePool", 0)) { setenv("ZOMIOS_FRAMEPOOL", "1", 1); printf("settings: per-frame autorelease pool on\n"); }
     JLI_Launch_t launch = (JLI_Launch_t)dlsym(h, "JLI_Launch");
     if (!launch) { printf("JLI_Launch not found\n"); return; }
 
@@ -329,7 +345,7 @@ static BOOL g_wantPointerLock;
             [a addObject:t];
         }
         // launcher memory preset replaces any heap sizing in the args file
-        int heapMode = low_mem_mode() ? 0 : MAX(0, MIN(3, pref_int(kPrefHeap, default_heap_mode())));
+        int heapMode = MAX(0, MIN(3, pref_int(kPrefHeap, default_heap_mode())));
         for (NSInteger i = (NSInteger)a.count - 1; i >= 1; i--) if ([a[i] hasPrefix:@"-Xmx"] || [a[i] hasPrefix:@"-Xms"]) [a removeObjectAtIndex:i];
         [a insertObject:[NSString stringWithFormat:@"-Xms%dm", kHeapMB[heapMode][1]] atIndex:1];
         [a insertObject:[NSString stringWithFormat:@"-Xmx%dm", kHeapMB[heapMode][0]] atIndex:1];
@@ -340,7 +356,6 @@ static BOOL g_wantPointerLock;
         NSUserDefaults *jud = NSUserDefaults.standardUserDefaults;
         int jitTier = [jud objectForKey:@"zom.jitCompiler"] ? (int)[jud integerForKey:@"zom.jitCompiler"] : ([jud boolForKey:@"zom.c2"] ? 2 : 0);     // zom.c2 was the old on/off switch
         jitTier = MAX(0, MIN(2, jitTier));
-        if (low_mem_mode()) { jitTier = 0; printf("settings: low memory mode ON (low heap, pzGC, strong texture compression, ASTC, C1, no HD textures, frame pool)\n"); }
         if (jitTier > 0) {
             for (NSInteger i = (NSInteger)a.count - 1; i >= 1; i--) if ([a[i] hasPrefix:@"-XX:TieredStopAtLevel"]) [a removeObjectAtIndex:i];
             if (jitTier == 1) {
@@ -358,10 +373,34 @@ static BOOL g_wantPointerLock;
         // set the threshold to 100%, so only the "10% free" trigger can force an unloading GC (a threshold of 100 can never be exceeded).
         if (jitTier > 0) for (NSUInteger i = 1; i < a.count; i++) if ([a[i] hasPrefix:@"-XX:ReservedCodeCacheSize"]) a[i] = @"-XX:ReservedCodeCacheSize=256M";
         { static const char *kJitName[3] = {"C1 only", "C1 + C2 (gentle thresholds)", "C1 + C2 (full)"}; printf("settings: JIT compiler %s\n", kJitName[jitTier]); }
+        // ZombieBuddy (Developer Tools): adds -javaagent:ZombieBuddy.jar. The jar goes in the game folder (Files > pziOS > game) or next to it in the pziOS folder; without it
+        // the JVM would refuse to start, so the argument is only added when the file is there.
+        if (pref_int(@"zom.zombieBuddy", 0)) {
+            NSString *zb = nil;
+            for (NSString *dir in @[[docs stringByAppendingPathComponent:@"game"], docs]) { NSString *c = [dir stringByAppendingPathComponent:@"ZombieBuddy.jar"]; if ([NSFileManager.defaultManager fileExistsAtPath:c]) { zb = c; break; } }
+            if (zb) { [a insertObject:[@"-javaagent:" stringByAppendingString:zb] atIndex:1]; printf("settings: ZombieBuddy on (-javaagent:%s)\n", zb.UTF8String); }
+            else printf("settings: ZombieBuddy is on but ZombieBuddy.jar was not found in Documents/game or Documents, so it is skipped\n");
+        }
+        // Graphics backend Zink (experimental, Developer Tools). Mesa Zink + MoltenVK replace gl4es + MetalANGLE; LWJGL then loads GL from libGLzink (trampolines into Mesa).
+        if (pref_int(@"zom.zinkBackend", 0)) {
+            setenv("ZOMIOS_ZINK", "1", 1);
+            if (pref_int(@"zom.zinkLog", 0)) { setenv("ZOMIOS_ZINKLOG", "1", 1); printf("settings: Zink detailed log on\n"); }
+            for (NSUInteger i = 1; i < a.count; i++) if ([a[i] hasPrefix:@"-Dorg.lwjgl.opengl.libname="]) a[i] = [NSString stringWithFormat:@"-Dorg.lwjgl.opengl.libname=%@/runtime/natives/zink/libGLzink.dylib", NSBundle.mainBundle.resourcePath];
+            printf("settings: graphics backend Zink over MoltenVK (experimental)\n");
+        }
+        // JIT path: iOS 19 and later (26/27) get their executable memory from the debugger as a mirror-mapped region. Older systems (iOS 17 and 18) have no
+        // such mapping to hand out, so the JVM runs its classic path there: an ordinary code cache whose pages are switched between writable and executable
+        // as needed while the debugger is attached. Preference zom.classicJIT forces it for testing: 1 classic, 0 mirror-mapped, unset = by iOS version.
+        {
+            if (classic_jit()) {
+                for (NSInteger i = (NSInteger)a.count - 1; i >= 1; i--) if ([a[i] isEqualToString:@"-XX:+MirrorMappedCodeCache"]) [a removeObjectAtIndex:i];
+                printf("settings: JIT path classic (no mirror-mapped code cache) on iOS %s\n", UIDevice.currentDevice.systemVersion.UTF8String);
+            }
+        }
         // Garbage collector: 0 Parallel (the args file), 3 Tuned Parallel, 2 SGC (generational Shenandoah), 4 SGC Async (1 was ZGC, which cannot start on iOS). Any non-default choice is a trial until the game has booted; if the previous trial never got that
         // far, it does not work here, so go back to Parallel.
         NSUserDefaults *ud = NSUserDefaults.standardUserDefaults;
-        int gc = low_mem_mode() ? 3 : (int)[ud integerForKey:@"zom.gc"];
+        int gc = (int)[ud integerForKey:@"zom.gc"];
         static const char *kGCName[5] = {"Parallel", "ZGC", "SGC (generational Shenandoah)", "pzGC (tuned Parallel)", "pzSGC"};
         if (gc != 0 && [ud boolForKey:@"zom.gcTrial"] && ![ud boolForKey:@"zom.gcOK"]) {
             printf("settings: the last %s launch never booted, so it is switched off\n", kGCName[MIN(MAX(gc, 0), 4)]);
@@ -396,13 +435,43 @@ static BOOL g_wantPointerLock;
                 [a insertObject:[NSString stringWithFormat:@"-Xmn%dm", kYoungMB[heapMode]] atIndex:1];
             }
         }
+        // RAM donor heap (experimental): the Java heap lives in memory held by the donor extension (another process), so iOS does not charge it to the
+        // app. The donor memory is prepared here; the JVM maps it over its heap range through PZ_DONOR_MAP_FN (JRE patch). Same trial rule as the others.
+        {
+            NSUserDefaults *hud = NSUserDefaults.standardUserDefaults;
+            if ([hud boolForKey:@"zom.ramDonorHeap"]) {
+                if ([hud boolForKey:@"zom.ramDonorTrial"] && ![hud boolForKey:@"zom.ramDonorOK"]) {
+                    printf("settings: the last launch with the RAM donor heap never booted, so it is switched off\n");
+                    [hud setBool:NO forKey:@"zom.ramDonorHeap"]; [hud setBool:NO forKey:@"zom.ramDonorTrial"];
+                } else {
+                    [hud setBool:YES forKey:@"zom.ramDonorTrial"]; [hud setBool:NO forKey:@"zom.ramDonorOK"]; [hud synchronize];
+                    // Heap size: the Memory Limit tier, or a bigger one chosen for the donor (0 = tier, 1..4 = 3..6 GB, default 1 = 3 GB). The heap is not limited by the app's own
+                    // budget here, only by the donors and by the device's physical memory.
+                    int donorGB = pref_int(@"zom.donorHeapGB", 1) > 0 ? 2 + pref_int(@"zom.donorHeapGB", 1) : 0;
+                    int heapMB = donorGB > 0 ? donorGB * 1024 : kHeapMB[heapMode][0];
+                    long physMB = (long)(NSProcessInfo.processInfo.physicalMemory / 1048576);
+                    if (heapMB > physMB - 2048) { heapMB = (int)((physMB - 2048) / 256 * 256); printf("settings: RAM donor heap limited to %d MB (device memory %ld MB)\n", heapMB, physMB); }
+                    char msg[4096] = {0};
+                    if (zom_donor_prepare(((uint64_t)heapMB + 128) << 20, msg, sizeof msg)) {
+                        char env[32]; snprintf(env, sizeof env, "%llx", (unsigned long long)(uintptr_t)&zom_donor_map);
+                        setenv("PZ_DONOR_MAP_FN", env, 1);
+                        if (heapMB != kHeapMB[heapMode][0]) {
+                            for (NSInteger i = (NSInteger)a.count - 1; i >= 1; i--) if ([a[i] hasPrefix:@"-Xmx"] || [a[i] hasPrefix:@"-Xms"]) [a removeObjectAtIndex:i];
+                            [a insertObject:[NSString stringWithFormat:@"-Xms%dm", MIN(heapMB / 2, 2048)] atIndex:1];
+                            [a insertObject:[NSString stringWithFormat:@"-Xmx%dm", heapMB] atIndex:1];
+                        }
+                        printf("%ssettings: RAM donor heap (experimental): the Java heap (-Xmx%dm) will live in donated memory (trial until the game boots)\n", msg, heapMB);
+                    } else printf("%ssettings: RAM donor heap could not be prepared, using ordinary memory (-Xmx%dm)\n", msg, kHeapMB[heapMode][0]);
+                }
+            }
+        }
         printf("settings: garbage collector %s%s\n", kGCName[MIN(MAX(gc, 0), 4)], gc != 0 ? " (trial until the game boots)" : "");
         printf("launch.args: %lu args\n", (unsigned long)a.count - 1);
         // launcher settings override anything the args file set for these
-        int shrink = low_mem_mode() ? 2 : pref_int(kPrefShrink, 1);
+        int shrink = pref_int(kPrefShrink, 1);
         setenv("LIBGL_SHRINK", shrink_env_value(shrink), 1);
         setenv("LIBGL_NOERROR", "1", 0);      // gl4es skips its per-call glGetError checks (they can stall the GPU layer); args file can override
-        { id astcPref = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.astc"]; BOOL astcOn = low_mem_mode() ? YES : (astcPref ? [astcPref boolValue] : YES);
+        { id astcPref = [NSUserDefaults.standardUserDefaults objectForKey:@"zom.astc"]; BOOL astcOn = astcPref ? [astcPref boolValue] : YES;
           setenv("ZOMIOS_ASTC", astcOn ? "512" : "0", 1); printf("settings: ASTC compression %s\n", astcOn ? "on" : "off"); }
         printf("settings: texture shrink=%s (LIBGL_SHRINK=%s), 2x packs=%s\n", shrink == 0 ? "off" : shrink == 1 ? "balanced" : "strong", shrink_env_value(shrink), pref_int(kPrefHiRes, 0) ? "on" : "off");
         {   // render resolution: the game's logical height; read by the GLFW layer when the window is made, and by the UI margin maths
@@ -432,6 +501,7 @@ static BOOL g_wantPointerLock;
             printf("settings: the chosen garbage collector did not start, switching back to Parallel\n");
             [ud setInteger:0 forKey:@"zom.gc"]; [ud setBool:NO forKey:@"zom.gcTrial"]; [ud setBool:YES forKey:@"zom.gcReverted"];
         }
+        if ([ud boolForKey:@"zom.ramDonorHeap"] && [ud boolForKey:@"zom.ramDonorTrial"] && ![ud boolForKey:@"zom.ramDonorOK"]) { [ud setBool:NO forKey:@"zom.ramDonorHeap"]; [ud setBool:NO forKey:@"zom.ramDonorTrial"]; }
         dispatch_async(dispatch_get_main_queue(), ^{ [self.model setRunning:NO]; });
     }
 }
@@ -463,7 +533,7 @@ int main(int argc, char *argv[]) {
         // First run only: pick the Memory Limit from the memory iOS grants this device and keep it. Measured now, before the app has grown, and
         // stored so the choice doesn't shift between launches; the user can change it in Settings.
         if (![NSUserDefaults.standardUserDefaults boolForKey:@"zom.devSwitchesReset1"]) { [NSUserDefaults.standardUserDefaults setBool:NO forKey:@"zom.memLog"]; [NSUserDefaults.standardUserDefaults setInteger:0 forKey:@"zom.simAspect"]; [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"zom.devSwitchesReset1"]; }
-        if (![NSUserDefaults.standardUserDefaults boolForKey:@"zom.devSwitchesReset2"]) { for (NSString *k in @[@"zom.framePool", @"zom.lowMem"]) [NSUserDefaults.standardUserDefaults setBool:NO forKey:k]; [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"zom.devSwitchesReset2"]; }      // experimental switches start off      // the memory-test switches start off
+        if (![NSUserDefaults.standardUserDefaults boolForKey:@"zom.devSwitchesReset2"]) { for (NSString *k in @[@"zom.framePool"]) [NSUserDefaults.standardUserDefaults setBool:NO forKey:k]; [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"zom.devSwitchesReset2"]; }      // experimental switches start off      // the memory-test switches start off
         if (![NSUserDefaults.standardUserDefaults objectForKey:kPrefHeap]) [NSUserDefaults.standardUserDefaults setInteger:default_heap_mode() forKey:kPrefHeap];
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([AD class]));
     }

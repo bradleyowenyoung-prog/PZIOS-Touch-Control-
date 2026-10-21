@@ -1,9 +1,9 @@
-name: ZomIOS
+name: pziOS
 options:
   bundleIdPrefix: com.knt
   deploymentTarget: { iOS: "17.0" }
 targets:
-  ZomIOS:
+  pziOS:
     type: application
     platform: iOS
     configFiles: { Debug: Config/Signing.xcconfig, Release: Config/Signing.xcconfig }
@@ -23,7 +23,7 @@ targets:
         codeSign: true
       - target: ZomJITHelper
     entitlements:
-      path: ZomIOS.entitlements
+      path: pziOS.entitlements
       properties:
         com.apple.developer.kernel.increased-memory-limit: true
     info:
@@ -78,6 +78,7 @@ targets:
     sources:
       - JITHelper
       - Shared
+      - RamDonor
     info:
       path: JITHelper/Info.plist
       properties:
@@ -89,8 +90,8 @@ targets:
             NSExtensionActivationRule: FALSEPREDICATE
           NSExtensionPointIdentifier: com.apple.ar.viewer
           NSExtensionPrincipalClass: ZomJITHelperHandler
-          NSExtensionContextClass: NSExtensionContext
-          NSExtensionContextHostClass: NSExtensionContext
+          NSExtensionContextClass: ZomDonorVendorContext
+          NSExtensionContextHostClass: ZomDonorHostContext
         XPCService:
           ServiceType: Application
           _MultipleInstances: true
@@ -158,10 +159,10 @@ targets:
 
 # Explicit schemes so they always exist (the implicit ones went missing after a regenerate).
 schemes:
-  ZomIOS:
+  pziOS:
     build:
       targets:
-        ZomIOS: all
+        pziOS: all
     run:
       config: Debug
     archive:
