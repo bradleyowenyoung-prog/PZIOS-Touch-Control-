@@ -58,7 +58,7 @@ step exists.
 
 ## Supported Devices
 
-- **iPhone 15 Pro or later.**
+- **iPhone 13 Pro or later.**
 - **iPad Pro A12z or later.**
 - **iPad Air M1 or later.**
 - **iPad Mini A17 Pro or later.**
@@ -67,7 +67,7 @@ step exists.
 
 ## Requirements
 
-- Supported iPhone or iPad on **iOS or iPadOS 26 or later** with **Developer Mode** turned on
+- Supported iPhone or iPad on **iOS or iPadOS 17 or later** with **Developer Mode** turned on
   (Settings, Privacy & Security, Developer Mode).
 - **Project Zomboid Build 42.21** for Mac. You need the game; pziOS only needs a copy of its files.
 - About **5 GB** of free space for the game, plus about 250 MB for the app.
