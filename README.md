@@ -166,7 +166,7 @@ which git ignores). For an IPA, edit `release.config` in the repository root.
 
 ## Licensing and credits
 
-The pziOS source code is under the [MIT licence](LICENSE). Third-party components keep their own
+The pziOS source code is under the [GPL-3 License](LICENSE). Third-party components keep their own
 licences: they are listed in [`THIRD_PARTY.md`](THIRD_PARTY.md), their texts are in `licenses/`, and
 the same texts are inside the app (`Licenses/`). The bundled JRE is OpenJDK (GPLv2 with the
 Classpath Exception); each release attaches its complete source change set.
