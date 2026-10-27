@@ -1,0 +1,98 @@
+From 925de0e8e4926221fdf101f64ac93609ee27fd81 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 13:18:22 +0000
+Subject: [PATCH 2/2] Test builds: two-thumb options without the new touch
+ editor
+
+Lets the two-thumb options be tried by swapping only libglfw.dylib into a
+release IPA, whose launcher has no switches for them yet. Defaults are
+baked in with -DTT_OPTIONS="rclatch=1;dragaim=LC,SHFT;..." and a
+touch-options.txt in the pziOS folder (Files app) overrides them.
+Buttons are matched by their on-screen label. Not meant for merging.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01URCT3hQyV93hoPsTKj56eK
+---
+ native/glfw-ios/glfw_ios.m | 45 ++++++++++++++++++++++++++++++++++----
+ 1 file changed, 41 insertions(+), 4 deletions(-)
+
+diff --git a/native/glfw-ios/glfw_ios.m b/native/glfw-ios/glfw_ios.m
+index a909c1a..9f21923 100644
+--- a/native/glfw-ios/glfw_ios.m
++++ b/native/glfw-ios/glfw_ios.m
+@@ -210,6 +210,42 @@ static void push_key(int key, int action) { Ev e = {.type = EV_KEY, .a = key, .b
+ static void push_mouse(int btn, int action) { Ev e = {.type = EV_MOUSEBTN, .a = btn, .b = action, .c = 0}; push_event(e); if (input_log_enabled()) glfwi_log("mouse button %d action %d", btn, action); }
+ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x, .y = y}; push_event(e); }
+ 
++// ---- test-build options -------------------------------------------------------------------------------
++// Lets the two-thumb options be tried with a launcher that has no switches for them yet (only this library swapped into a release IPA).
++// Defaults are baked in at build time (-DTT_OPTIONS="rclatch=1;dragaim=LC,SHFT;..."); a file touch-options.txt in the pziOS folder
++// (Files app) overrides them, one "key=value" per line. Keys: rclatch (1/0), dragaim and firerelease (button labels, comma separated),
++// firetoggle (label of a button that becomes the REL/HOLD fire mode toggle), dragspeed (cursor speed, e.g. 1.0).
++#ifndef TT_OPTIONS
++#define TT_OPTIONS ""
++#endif
++static void tt_parse(NSString *txt, NSString *sep, NSMutableDictionary *m) {
++    for (NSString *line in [txt componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:sep]]) {
++        NSRange eq = [line rangeOfString:@"="];
++        if (eq.location == NSNotFound || [line hasPrefix:@"#"]) continue;
++        NSString *k = [[line substringToIndex:eq.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet].lowercaseString;
++        m[k] = [[line substringFromIndex:eq.location + 1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
++    }
++}
++static NSDictionary<NSString *, NSString *> *tt_options(void) {
++    static NSDictionary *opts; static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        NSMutableDictionary *m = [NSMutableDictionary dictionary];
++        tt_parse(@TT_OPTIONS, @";", m);
++        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
++        NSString *txt = [NSString stringWithContentsOfFile:[docs stringByAppendingPathComponent:@"touch-options.txt"] encoding:NSUTF8StringEncoding error:nil];
++        if (txt) tt_parse(txt, @"\r\n;", m);
++        opts = m;
++        glfwi_log("two-thumb options: %s", m.description.UTF8String);
++    });
++    return opts;
++}
++static BOOL tt_lists(NSString *key, NSString *label) {
++    NSString *v = tt_options()[key]; if (!v.length || !label.length) return NO;
++    for (NSString *s in [v componentsSeparatedByString:@","])
++        if ([[s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet] caseInsensitiveCompare:label] == NSOrderedSame) return YES;
++    return NO;
++}
++
+ // ---- on-screen controls -------------------------------------------------------------------------------
+ // kind: 0 = key, 1 = mouse button, 2 = toggle soft keyboard, 3 = toggle overlay, 4 = PAD/TCH, 5 = fire mode (REL/HOLD)
+ @interface ZOButton : UIView
+@@ -305,7 +341,7 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
+     NSUInteger tok = ++self.pressToken;
+     if (self.fireOnRelease && self.kind <= 1 && !((GLFWiOSView *)self.superview).releaseFireOff) { self.armed = YES; [self updateLook]; return; }     // nothing is sent until the finger lifts
+     self.down = YES;
+-    if (self.kind == 1 && self.code == 1 && [NSUserDefaults.standardUserDefaults boolForKey:@"zom.rcLatch"]) {
++    if (self.kind == 1 && self.code == 1 && ([NSUserDefaults.standardUserDefaults boolForKey:@"zom.rcLatch"] || [tt_options()[@"rclatch"] boolValue])) {
+         __weak ZOButton *ws = self;
+         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{     // long press -> keep right click held
+             ZOButton *s = ws;
+@@ -326,7 +362,7 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
+         if (hypot(p.x - self.dragStart.x, p.y - self.dragStart.y) < 8) return;
+         self.dragActive = YES; self.dragLast = p; return;
+     }
+-    double k = [d doubleForKey:@"zom.dragAimSens"]; if (k <= 0) k = 1.0;
++    double k = tt_options()[@"dragspeed"] ? [tt_options()[@"dragspeed"] doubleValue] : [d doubleForKey:@"zom.dragAimSens"]; if (k <= 0) k = 1.0;
+     [gv moveCursorTo:CGPointMake(gv.cursorPt.x + (p.x - self.dragLast.x) * k, gv.cursorPt.y + (p.y - self.dragLast.y) * k)];
+     self.dragLast = p;
+ }
+@@ -632,8 +668,9 @@ static void frame_rate_hint_start(void) {
+         ZOButton *b = [ZOButton buttonWithTitle:label kind:k code:code size:size]; b.norm = norm; b.alpha = alpha; b.tag = tag++;
+         if (k <= 1) {                                                         // key and mouse buttons only: the per-button two-thumb options
+             id da = it[@"dragAim"], fr = it[@"fireOnRelease"];
+-            b.dragAimOn = [da respondsToSelector:@selector(boolValue)] && [da boolValue];
+-            b.fireOnRelease = [fr respondsToSelector:@selector(boolValue)] && [fr boolValue];
++            b.dragAimOn = ([da respondsToSelector:@selector(boolValue)] && [da boolValue]) || tt_lists(@"dragaim", label);
++            b.fireOnRelease = ([fr respondsToSelector:@selector(boolValue)] && [fr boolValue]) || tt_lists(@"firerelease", label);
++            if (tt_lists(@"firetoggle", label)) { b.kind = 5; b.dragAimOn = b.fireOnRelease = NO; b.label.text = @"REL"; }
+         }
+         [self addSubview:b];
+         if (k == 3) { self.hideButton = b; b.tag = 19; }
+-- 
+2.43.0
+

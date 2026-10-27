@@ -1,0 +1,290 @@
+From 48b5c266595257ede80bd8f0aa1cbf8801ce4541 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 27 Oct 2026 11:26:14 +0000
+Subject: [PATCH 1/2] Touch controls: per-button drag-to-aim and
+ fire-on-release, fire mode toggle, hold RC on long press
+
+Lets one thumb attack/shove and aim while the other moves, without a
+third finger. Everything is off by default and set in the touch editor.
+
+Per key/mouse button (tap a button in the editor):
+- Drag to aim: while a finger is held on the button, dragging it also
+  moves the cursor like PAD mode (8 pt dead zone; speed slider in the
+  editor panel appears once any button uses it).
+- Fire on release: holding does nothing (the button shows amber), so you
+  can aim without spamming attacks; lifting the finger sends one press.
+  Together with drag to aim: hold to aim, lift to fire once.
+
+New "Fire mode toggle" button (Add menu): flips every Fire on release
+button between release (REL) and plain hold (HOLD), shown on the button.
+
+Global:
+- Hold RC on long press: a 0.5 s press on a right-click button keeps it
+  held after the finger lifts (gold ring + haptic). The next tap, ESC,
+  hiding the controls, or connecting a controller lets go.
+
+Untested on device: written against the public tree, not built in Xcode.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01URCT3hQyV93hoPsTKj56eK
+---
+ HostApp/Sources/ControlsEditor.swift |  33 ++++++++-
+ native/glfw-ios/glfw_ios.m           | 104 +++++++++++++++++++++++++--
+ 2 files changed, 130 insertions(+), 7 deletions(-)
+
+diff --git a/HostApp/Sources/ControlsEditor.swift b/HostApp/Sources/ControlsEditor.swift
+index 8cc6e27..62ec84e 100644
+--- a/HostApp/Sources/ControlsEditor.swift
++++ b/HostApp/Sources/ControlsEditor.swift
+@@ -6,7 +6,7 @@ import UIKit
+ // MARK: - Touch layout model
+ 
+ struct TouchItem: Codable, Identifiable, Equatable {
+-    enum Kind: String, Codable { case stick, aimstick, autoattack, key, mouse, keyboard, hide, mode, padstick, padbtn, padtrig }     // pad*: virtual gamepad controls
++    enum Kind: String, Codable { case stick, aimstick, autoattack, key, mouse, keyboard, hide, mode, firemode, padstick, padbtn, padtrig }     // pad*: virtual gamepad controls
+     var id: String
+     var kind: Kind
+     var label: String
+@@ -14,6 +14,8 @@ struct TouchItem: Codable, Identifiable, Equatable {
+     var x: Double            // centre, as a fraction of the screen
+     var y: Double
+     var size: Double         // points
++    var dragAim: Bool? = nil         // key/mouse buttons: dragging a finger held on the button also moves the cursor (aim while attacking or shoving)
++    var fireOnRelease: Bool? = nil   // key/mouse buttons: nothing happens while held, one press is sent when the finger lifts
+     var locked: Bool { kind == .hide || kind == .mode }
+     var isStick: Bool { kind == .stick || kind == .aimstick || kind == .padstick }   // HIDE and PAD/TCH can't be removed, or you could lose the controls
+ }
+@@ -199,6 +201,8 @@ struct TouchLayoutEditor: View {
+     @State private var saveItem: DispatchWorkItem?
+     @AppStorage("zom.aimAttackMode") private var aimAttackMode = 0          // aim joystick: 0 no attack, 1 one attack on release, 2 auto-attack while pushed
+     @AppStorage("zom.mouseSens") private var mouseSens = 1.0       // cursor speed of PAD mode (1.0 = one point of cursor per point of finger); applies on the next start
++    @AppStorage("zom.rcLatch") private var rcLatch = false         // a long press on a right-click button keeps it held until the next tap
++    @AppStorage("zom.dragAimSens") private var dragAimSens = 1.0   // cursor speed of the drag-to-aim on buttons that have it switched on
+     @State private var presets: [TouchPreset] = []
+     @State private var naming = false
+     @State private var newName = ""
+@@ -285,6 +289,7 @@ struct TouchLayoutEditor: View {
+                         if !layout.items.contains(where: { $0.kind == .stick }) { Button("Joystick") { add(.stick, label: "", code: 0, size: 130) } }
+                         if !layout.items.contains(where: { $0.kind == .aimstick }) { Button("Aim joystick") { add(.aimstick, label: "", code: 0, size: 130) } }
+                         if !layout.items.contains(where: { $0.kind == .keyboard }) { Button("Keyboard toggle") { add(.keyboard, label: "KB", code: 0, size: 44) } }
++                        if !layout.items.contains(where: { $0.kind == .firemode }) { Button("Fire mode toggle") { add(.firemode, label: "REL", code: 0, size: 44) } }   // flips every Fire on release button between release and hold
+                     }
+                 } label: { pill("Add", system: "plus") }
+                 Button { layout = pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout; TouchLayoutStore.save(layout, pad: pad); selected = nil } label: { pill("Reset", system: "arrow.counterclockwise") }
+@@ -318,6 +323,19 @@ struct TouchLayoutEditor: View {
+                         Picker("", selection: $aimAttackMode) { Text("Off").tag(0); Text("Release").tag(1); Text("Auto").tag(2) }.pickerStyle(.segmented)
+                     }
+                 }
++                // Two-thumb play: move with the left thumb; the right thumb attacks or shoves and aims without lifting.
++                HStack {
++                    Text("Hold RC on long press").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
++                    Spacer()
++                    Toggle("", isOn: $rcLatch).labelsHidden().scaleEffect(0.8, anchor: .trailing)
++                }
++                if layout.items.contains(where: { $0.dragAim == true }) {      // switched on per button: tap a button to edit
++                    HStack {
++                        Text("Drag speed").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
++                        Slider(value: $dragAimSens, in: 0.2...4, step: 0.1).tint(.white)
++                        Text(String(format: "%.1fx", dragAimSens)).font(.system(size: 12, design: .monospaced)).foregroundStyle(.white.opacity(0.6)).frame(width: 36, alignment: .trailing)
++                    }
++                }
+             }
+ 
+             if let i = selectedIndex { inspector(i) }
+@@ -383,6 +401,19 @@ struct TouchLayoutEditor: View {
+                         .multilineTextAlignment(.center).font(.system(size: 13, weight: .semibold)).frame(width: 80, height: 28)
+                         .background(Color.white.opacity(0.12), in: Capsule()).textInputAutocapitalization(.characters).autocorrectionDisabled()
+                 }
++                // Two-thumb play. Turn both on for attack and shove: hold to aim, lift to fire once.
++                HStack {
++                    Text("Drag to aim").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
++                    Spacer()
++                    Toggle("", isOn: Binding(get: { layout.items[i].dragAim ?? false }, set: { layout.items[i].dragAim = $0 ? true : nil }))
++                        .labelsHidden().scaleEffect(0.8, anchor: .trailing)
++                }
++                HStack {
++                    Text("Fire on release").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
++                    Spacer()
++                    Toggle("", isOn: Binding(get: { layout.items[i].fireOnRelease ?? false }, set: { layout.items[i].fireOnRelease = $0 ? true : nil }))
++                        .labelsHidden().scaleEffect(0.8, anchor: .trailing)
++                }
+             }
+             HStack {
+                 Text("Size").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+diff --git a/native/glfw-ios/glfw_ios.m b/native/glfw-ios/glfw_ios.m
+index ce0dcfa..a909c1a 100644
+--- a/native/glfw-ios/glfw_ios.m
++++ b/native/glfw-ios/glfw_ios.m
+@@ -211,13 +211,26 @@ static void push_mouse(int btn, int action) { Ev e = {.type = EV_MOUSEBTN, .a =
+ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x, .y = y}; push_event(e); }
+ 
+ // ---- on-screen controls -------------------------------------------------------------------------------
+-// kind: 0 = key, 1 = mouse button, 2 = toggle soft keyboard, 3 = toggle overlay
++// kind: 0 = key, 1 = mouse button, 2 = toggle soft keyboard, 3 = toggle overlay, 4 = PAD/TCH, 5 = fire mode (REL/HOLD)
+ @interface ZOButton : UIView
+ @property (nonatomic) int kind, code;
+ @property (nonatomic, strong) UILabel *label;
+ @property (nonatomic) BOOL down;
+ @property (nonatomic) CGPoint norm;      // centre as a fraction of the view (from the saved layout); (0,0) = use the built-in position
++// Two-thumb options (all off by default, set in the touch editor):
++//  "zom.rcLatch"  - a long press on a right-click button keeps the button held after the finger lifts; the next tap lets go.
++//  dragAimOn      - (per button, key/mouse only) dragging a finger held on the button also moves the cursor (like PAD mode), so one thumb can attack/shove and aim.
++//  "zom.dragAimSens" - cursor speed for that drag (1.0 = one point of cursor per point of finger).
++//  fireOnRelease  - (per button, key/mouse only) holding does nothing (so you can aim without spamming); lifting the finger sends one press.
++@property (nonatomic) BOOL dragAimOn, fireOnRelease;
++@property (nonatomic) BOOL armed;                      // fireOnRelease: finger is down, the press goes out when it lifts
++@property (nonatomic) BOOL latched;
++@property (nonatomic, weak) UITouch *dragTouch;        // the finger that pressed this button
++@property (nonatomic) CGPoint dragStart, dragLast;
++@property (nonatomic) BOOL dragActive;                 // the finger has moved past the dead zone, the cursor follows it
++@property (nonatomic) NSUInteger pressToken;           // bumped when the finger lifts, so a pending long press does nothing
+ + (instancetype)buttonWithTitle:(NSString *)t kind:(int)k code:(int)c size:(CGFloat)size;
++- (void)releaseLatch;
+ @end
+ @interface GLFWiOSView : UIView <UIGestureRecognizerDelegate>
+ @property (nonatomic) GLFWwindow *win;
+@@ -225,6 +238,7 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
+ @property (nonatomic, strong) ZOButton *hideButton;
+ @property (nonatomic, strong) UIView *kbInput;       // hidden text-input responder, first responder only while the soft keyboard is shown
+ @property (nonatomic) BOOL keyboardShown, controlsHidden, padConnected;
++@property (nonatomic) BOOL releaseFireOff;           // the fire mode button put the "Fire on release" buttons back to plain hold
+ @property (nonatomic) CFTimeInterval pressTime;
+ @property (nonatomic) BOOL pointerDown;
+ @property (nonatomic, weak) UITouch *pointerTouch;
+@@ -241,6 +255,8 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
+ - (void)toggleMode;
+ - (void)toggleKeyboard;
+ - (void)toggleControls;
++- (void)releaseLatches;
++- (void)toggleReleaseFire;
+ - (void)updateControlVisibility;
+ - (void)updateCursorVisibility;
+ - (void)setPadConnected:(BOOL)on;
+@@ -260,19 +276,78 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
+     [b addSubview:b.label];
+     return b;
+ }
++- (void)updateLook {
++    if (self.armed && !self.down) self.backgroundColor = [UIColor colorWithRed:0.9 green:0.6 blue:0.2 alpha:0.6];     // armed: amber until it fires on release
++    else self.backgroundColor = self.down ? [UIColor colorWithRed:0.9 green:0.3 blue:0.2 alpha:0.75] : [UIColor colorWithWhite:0.1 alpha:0.45];
++    self.layer.borderWidth = self.latched ? 4 : 2;                       // a held (latched) button gets a thick gold ring
++    self.layer.borderColor = (self.latched ? [UIColor colorWithRed:1 green:0.85 blue:0.3 alpha:1] : [UIColor colorWithWhite:1 alpha:0.6]).CGColor;
++}
+ - (void)setDown:(BOOL)d {
+     if (_down == d) return; _down = d;
+-    self.backgroundColor = d ? [UIColor colorWithRed:0.9 green:0.3 blue:0.2 alpha:0.75] : [UIColor colorWithWhite:0.1 alpha:0.45];
++    [self updateLook];
+     GLFWiOSView *gv = (GLFWiOSView *)self.superview;
+     if (self.kind == 0) push_key(self.code, d ? GLFW_PRESS : GLFW_RELEASE);
+     else if (self.kind == 1) push_mouse(self.code, d ? GLFW_PRESS : GLFW_RELEASE);
+     else if (d && self.kind == 2) [gv toggleKeyboard];
+     else if (d && self.kind == 3) [gv toggleControls];
+     else if (d && self.kind == 4) [gv toggleMode];
++    else if (d && self.kind == 5) [gv toggleReleaseFire];
++    if (d && self.kind == 0 && self.code == 256) [gv releaseLatches];     // ESC (menus, pause) lets go of any held right-click
++}
++- (void)releaseLatch {
++    if (!self.latched) return;
++    self.latched = NO; self.down = NO; [self updateLook];
+ }
+-- (void)touchesBegan:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = YES; }
+-- (void)touchesEnded:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = NO; }
+-- (void)touchesCancelled:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = NO; }
++- (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
++    if (self.latched) { [self releaseLatch]; self.dragTouch = nil; return; }       // a tap on a held button lets go of it
++    UITouch *t = ts.anyObject;
++    if (!self.dragTouch) { self.dragTouch = t; self.dragStart = self.dragLast = [t locationInView:self.superview]; self.dragActive = NO; }
++    NSUInteger tok = ++self.pressToken;
++    if (self.fireOnRelease && self.kind <= 1 && !((GLFWiOSView *)self.superview).releaseFireOff) { self.armed = YES; [self updateLook]; return; }     // nothing is sent until the finger lifts
++    self.down = YES;
++    if (self.kind == 1 && self.code == 1 && [NSUserDefaults.standardUserDefaults boolForKey:@"zom.rcLatch"]) {
++        __weak ZOButton *ws = self;
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{     // long press -> keep right click held
++            ZOButton *s = ws;
++            if (!s || s.pressToken != tok || !s.down || s.dragActive || s.latched) return;
++            s.latched = YES; [s updateLook];
++            [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium] impactOccurred];
++        });
++    }
++}
++- (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
++    UITouch *t = self.dragTouch;
++    if (!t || ![ts containsObject:t] || self.kind > 1) return;                      // only key and mouse buttons
++    if (!self.dragAimOn) return;
++    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
++    GLFWiOSView *gv = (GLFWiOSView *)self.superview;
++    CGPoint p = [t locationInView:gv];
++    if (!self.dragActive) {                                                         // small dead zone so a held press doesn't nudge the cursor
++        if (hypot(p.x - self.dragStart.x, p.y - self.dragStart.y) < 8) return;
++        self.dragActive = YES; self.dragLast = p; return;
++    }
++    double k = [d doubleForKey:@"zom.dragAimSens"]; if (k <= 0) k = 1.0;
++    [gv moveCursorTo:CGPointMake(gv.cursorPt.x + (p.x - self.dragLast.x) * k, gv.cursorPt.y + (p.y - self.dragLast.y) * k)];
++    self.dragLast = p;
++}
++- (void)finishTouches:(NSSet<UITouch *> *)ts cancelled:(BOOL)cancelled {
++    self.pressToken++;                                                              // cancels a pending long press
++    if (self.dragTouch && [ts containsObject:self.dragTouch]) { self.dragTouch = nil; self.dragActive = NO; }
++    if (self.armed) {                                                               // fire on release: one quick press as the finger lifts
++        self.armed = NO; [self updateLook];
++        if (!cancelled) {
++            self.down = YES;
++            __weak ZOButton *ws = self;
++            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ ws.down = NO; });
++        }
++        return;
++    }
++    if (cancelled) [self releaseLatch];
++    if (self.latched) return;                                                       // finger lifted but the button stays held
++    self.down = NO;
++}
++- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finishTouches:ts cancelled:NO]; }
++- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finishTouches:ts cancelled:YES]; }
+ @end
+ 
+ @interface ZOJoystick : UIView
+@@ -481,6 +556,17 @@ static void frame_rate_hint_start(void) {
+     if (self.keyboardShown) [self.kbInput becomeFirstResponder];
+     else { [self.kbInput resignFirstResponder]; [self becomeFirstResponder]; }
+ }
++- (void)releaseLatches {
++    for (UIView *v in self.controls) if ([v isKindOfClass:ZOButton.class]) [(ZOButton *)v releaseLatch];
++}
++// The fire mode button: REL = buttons with "Fire on release" fire when the finger lifts, HOLD = they act like normal buttons. Shown on the button itself.
++- (void)toggleReleaseFire {
++    self.releaseFireOff = !self.releaseFireOff;
++    [self updateFireModeLabels];
++}
++- (void)updateFireModeLabels {
++    for (UIView *v in self.controls) if ([v isKindOfClass:ZOButton.class] && ((ZOButton *)v).kind == 5) ((ZOButton *)v).label.text = self.releaseFireOff ? @"HOLD" : @"REL";
++}
+ - (void)toggleControls {
+     self.controlsHidden = !self.controlsHidden;
+     self.hideButton.label.text = self.controlsHidden ? @"SHOW" : @"HIDE";
+@@ -494,6 +580,7 @@ static void frame_rate_hint_start(void) {
+ - (void)updateControlVisibility {
+     [self updateCursorVisibility];
+     BOOL away = self.padConnected || kbm_connected();       // a controller, or a physical keyboard together with a mouse
++    if (self.controlsHidden || away) [self releaseLatches];   // a held right-click must not get stuck with no button left to tap
+     for (UIView *v in self.controls) v.hidden = self.controlsHidden || away;
+     self.hideButton.hidden = away; self.modeButton.hidden = away;
+ }
+@@ -540,9 +627,14 @@ static void frame_rate_hint_start(void) {
+             ZOJoystick *j = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; j.tag = tag++; j.norm = norm; j.alpha = alpha;
+             [self addSubview:j]; [self.controls addObject:j]; continue;
+         }
+-        int k = [kind isEqualToString:@"key"] ? 0 : [kind isEqualToString:@"mouse"] ? 1 : [kind isEqualToString:@"keyboard"] ? 2 : [kind isEqualToString:@"hide"] ? 3 : [kind isEqualToString:@"mode"] ? 4 : -1;
++        int k = [kind isEqualToString:@"key"] ? 0 : [kind isEqualToString:@"mouse"] ? 1 : [kind isEqualToString:@"keyboard"] ? 2 : [kind isEqualToString:@"hide"] ? 3 : [kind isEqualToString:@"mode"] ? 4 : [kind isEqualToString:@"firemode"] ? 5 : -1;
+         if (k < 0) continue;
+         ZOButton *b = [ZOButton buttonWithTitle:label kind:k code:code size:size]; b.norm = norm; b.alpha = alpha; b.tag = tag++;
++        if (k <= 1) {                                                         // key and mouse buttons only: the per-button two-thumb options
++            id da = it[@"dragAim"], fr = it[@"fireOnRelease"];
++            b.dragAimOn = [da respondsToSelector:@selector(boolValue)] && [da boolValue];
++            b.fireOnRelease = [fr respondsToSelector:@selector(boolValue)] && [fr boolValue];
++        }
+         [self addSubview:b];
+         if (k == 3) { self.hideButton = b; b.tag = 19; }
+         else if (k == 4) { self.modeButton = b; b.tag = 20; }
+-- 
+2.43.0
+
