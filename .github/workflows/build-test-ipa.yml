@@ -104,7 +104,15 @@ jobs:
           if [ "$LAUNCHER" = "true" ]; then
             EXE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP/Info.plist")
             echo "replacing the launcher executable $EXE"
-            cp build/Release-iphoneos/pziOS.app/pziOS "$APP/$EXE"
+            NEW=build/Release-iphoneos/pziOS.app/pziOS
+            # Sanity checks, shown on the run page: the new editor is in it, and it links the same libraries as the official one
+            otool -L "$APP/$EXE" | tail -n +2 | awk '{print $1}' | sort > old-libs.txt
+            otool -L "$NEW" | tail -n +2 | awk '{print $1}' | sort > new-libs.txt
+            EXTRA=$(comm -13 old-libs.txt new-libs.txt); GONE=$(comm -23 old-libs.txt new-libs.txt)
+            [ -z "$EXTRA$GONE" ] || echo "::warning::launcher links differ. new: $(echo $EXTRA) / missing: $(echo $GONE)"
+            for s in "Long press to lock" "Fire mode toggle" "Drag to aim"; do strings "$NEW" | grep -q "$s" || echo "::error::new launcher lacks '$s'"; done
+            echo "::notice::launcher $(xcodebuild -version | head -1 | tr -d '\n'); $(lipo -archs "$NEW"); $(wc -c < "$APP/$EXE" | tr -d ' ') -> $(wc -c < "$NEW" | tr -d ' ') bytes; links $(wc -l < new-libs.txt | tr -d ' ') libraries"
+            cp "$NEW" "$APP/$EXE"
           fi
           codesign -f -s - --preserve-metadata=entitlements "$APP" || echo "app re-sign skipped (your sideloading tool re-signs it anyway)"
           (cd x && zip -qry ../pziOS-two-thumb-test.ipa Payload)
