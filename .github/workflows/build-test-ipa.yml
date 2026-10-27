@@ -14,7 +14,7 @@ on:
       options:
         description: "Two-thumb options baked into the build (button labels as shown on screen)"
         required: false
-        default: "rclatch=1;dragaim=LC,SHFT;firerelease=LC;dragspeed=1.0"
+        default: "rclatch=1;dragaim=LC,SHFT;firerelease=LC;autofire=SHFT;dragspeed=1.0"
 
 jobs:
   build:
@@ -22,10 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Apply the patches in test-patches/
+      - name: Apply the patches (top of the repo or test-patches/)
         run: |
           shopt -s nullglob
-          for p in test-patches/*.patch; do
+          PATCHES=(*.patch test-patches/*.patch)
+          [ ${#PATCHES[@]} -gt 0 ] || { echo "::error::no .patch files found"; exit 1; }
+          for p in "${PATCHES[@]}"; do
             if git apply --check "$p" 2>/dev/null; then git apply "$p"; echo "applied $p"
             elif git apply -R --check "$p" 2>/dev/null; then echo "already in the code: $p"
             else echo "::error::$p does not apply to this code"; exit 1; fi
