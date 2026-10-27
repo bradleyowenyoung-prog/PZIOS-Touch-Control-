@@ -1,7 +1,8 @@
-From a7a1078294c217c21bb3f3a574cd0978d4174852 Mon Sep 17 00:00:00 2001
+From be5436711863d95d7da1adc6769e1a73e1c8564e Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 11:26:14 +0000
-Subject: [PATCH] Test builds: two-thumb options without the new touch editor
+Subject: [PATCH 2/2] Test builds: two-thumb options without the new touch
+ editor
 
 Lets the two-thumb options be tried with a launcher that has no switches
 for them (only libglfw.dylib swapped into a release IPA). Defaults are
@@ -18,7 +19,7 @@ Claude-Session: https://claude.ai/code/session_01URCT3hQyV93hoPsTKj56eK
  1 file changed, 52 insertions(+), 3 deletions(-)
 
 diff --git a/native/glfw-ios/glfw_ios.m b/native/glfw-ios/glfw_ios.m
-index 806595d..a1b8008 100644
+index 9f44250..07ae22d 100644
 --- a/native/glfw-ios/glfw_ios.m
 +++ b/native/glfw-ios/glfw_ios.m
 @@ -210,6 +210,42 @@ static void push_key(int key, int action) { Ev e = {.type = EV_KEY, .a = key, .b
@@ -64,7 +65,7 @@ index 806595d..a1b8008 100644
  // ---- on-screen controls -------------------------------------------------------------------------------
  // kind: 0 = key, 1 = mouse button, 2 = toggle soft keyboard, 3 = toggle overlay, 4 = PAD/TCH, 5 = fire mode toggle (cycles its target button's fire mode)
  @interface ZOButton : UIView
-@@ -347,7 +383,7 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
+@@ -349,7 +385,7 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
          if (hypot(p.x - self.dragStart.x, p.y - self.dragStart.y) < 8) return;
          self.dragActive = YES; self.dragLast = p; return;
      }
@@ -73,7 +74,7 @@ index 806595d..a1b8008 100644
      [gv moveCursorTo:CGPointMake(gv.cursorPt.x + (p.x - self.dragLast.x) * k, gv.cursorPt.y + (p.y - self.dragLast.y) * k)];
      self.dragLast = p;
  }
-@@ -585,6 +621,12 @@ static void frame_rate_hint_start(void) {
+@@ -657,6 +693,12 @@ static void frame_rate_hint_start(void) {
  // already repeats most actions). The toggle shows the mode.
  - (ZOButton *)buttonWithItemId:(NSString *)iid {
      if (!iid.length) return nil;
@@ -86,10 +87,10 @@ index 806595d..a1b8008 100644
      for (UIView *v in self.controls) if ([v isKindOfClass:ZOButton.class] && [((ZOButton *)v).itemId isEqualToString:iid]) return (ZOButton *)v;
      return nil;
  }
-@@ -668,9 +710,16 @@ static void frame_rate_hint_start(void) {
-         b.itemId = [it[@"id"] isKindOfClass:NSString.class] ? it[@"id"] : nil;
+@@ -745,9 +787,16 @@ static void frame_rate_hint_start(void) {
          if (k <= 1) {                                                         // key and mouse buttons only: the per-button two-thumb options
-             id da = it[@"dragAim"], fm = it[@"fireMode"], hl = it[@"holdLock"];
+             id da = it[@"dragAim"], fm = it[@"fireMode"], hl = it[@"holdLock"], ht = it[@"holdLockTime"];
+             b.holdLockDelay = [ht respondsToSelector:@selector(doubleValue)] ? MAX(0.1, MIN(3.0, [ht doubleValue])) : 0.5;
 -            b.dragAimOn = [da respondsToSelector:@selector(boolValue)] && [da boolValue];
 -            b.holdLockOn = [hl respondsToSelector:@selector(boolValue)] && [hl boolValue];
 +            b.dragAimOn = ([da respondsToSelector:@selector(boolValue)] && [da boolValue]) || tt_lists(@"dragaim", label);
