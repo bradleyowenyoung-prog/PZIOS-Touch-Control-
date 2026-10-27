@@ -1,4 +1,4 @@
-From af8c5d98581cc5794cf952e28b1e1cc97cf8f5bb Mon Sep 17 00:00:00 2001
+From 2ca4febaabc5793d1863b423c24ff460d42a15c2 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 11:26:14 +0000
 Subject: [PATCH 1/2] Touch controls: two-thumb options, scroll strip, launcher
@@ -43,12 +43,12 @@ Also:
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01URCT3hQyV93hoPsTKj56eK
 ---
- HostApp/Sources/ControlsEditor.swift | 136 ++++++++++++--
- native/glfw-ios/glfw_ios.m           | 257 ++++++++++++++++++++++++---
- 2 files changed, 361 insertions(+), 32 deletions(-)
+ HostApp/Sources/ControlsEditor.swift | 307 ++++++++++++++++++-
+ native/glfw-ios/glfw_ios.m           | 424 +++++++++++++++++++++++++--
+ 2 files changed, 694 insertions(+), 37 deletions(-)
 
 diff --git a/HostApp/Sources/ControlsEditor.swift b/HostApp/Sources/ControlsEditor.swift
-index 8cc6e27..721236f 100644
+index 8cc6e27..6ec6a43 100644
 --- a/HostApp/Sources/ControlsEditor.swift
 +++ b/HostApp/Sources/ControlsEditor.swift
 @@ -6,7 +6,7 @@ import UIKit
@@ -56,11 +56,11 @@ index 8cc6e27..721236f 100644
  
  struct TouchItem: Codable, Identifiable, Equatable {
 -    enum Kind: String, Codable { case stick, aimstick, autoattack, key, mouse, keyboard, hide, mode, padstick, padbtn, padtrig }     // pad*: virtual gamepad controls
-+    enum Kind: String, Codable { case stick, aimstick, autoattack, key, mouse, keyboard, hide, mode, firemode, scroll, padstick, padbtn, padtrig }     // pad*: virtual gamepad controls
++    enum Kind: String, Codable { case stick, aimstick, autoattack, key, mouse, keyboard, hide, mode, firemode, scroll, radial, padstick, padbtn, padtrig }     // pad*: virtual gamepad controls
      var id: String
      var kind: Kind
      var label: String
-@@ -14,7 +14,15 @@ struct TouchItem: Codable, Identifiable, Equatable {
+@@ -14,10 +14,30 @@ struct TouchItem: Codable, Identifiable, Equatable {
      var x: Double            // centre, as a fraction of the screen
      var y: Double
      var size: Double         // points
@@ -69,6 +69,8 @@ index 8cc6e27..721236f 100644
 +    var holdLock: Bool? = nil        // key/mouse buttons: a long press keeps the button held until the next tap (e.g. RC for hands-free aiming)
 +    var holdLockTime: Double? = nil  // seconds of pressing before that lock engages; nil = the default (TouchItem.defaultHoldLockTime)
 +    var target: String? = nil        // fire mode toggle: the id of the button whose fire mode it cycles
++    var slots: [RadialSlot]? = nil   // radial menu: its options, clockwise from the top (2-8)
++    var tapSlot: Int? = nil          // radial menu: the option a quick tap sends; nil = a tap does nothing
 +    static let defaultHoldLockTime = 0.5
      var locked: Bool { kind == .hide || kind == .mode }
 +    /// Half the width and height the control takes on screen (the scroll strip is a tall bar; everything else is round).
@@ -76,7 +78,20 @@ index 8cc6e27..721236f 100644
      var isStick: Bool { kind == .stick || kind == .aimstick || kind == .padstick }   // HIDE and PAD/TCH can't be removed, or you could lose the controls
  }
  
-@@ -198,7 +206,10 @@ struct TouchLayoutEditor: View {
++/// One option of a radial menu: a key, a mouse button, or one of the overlay's own controls.
++struct RadialSlot: Codable, Identifiable, Equatable {
++    enum Kind: String, Codable { case none, key, mouse, hide, mode, keyboard, firemode }
++    var id = UUID().uuidString
++    var kind: Kind = .none
++    var code: Int = 0
++    var label: String = ""
++    var target: String? = nil        // firemode: the button it switches between Default and Release
++}
++
+ struct TouchLayout: Codable, Equatable {
+     var opacity: Double = 1
+     var items: [TouchItem]
+@@ -198,7 +218,10 @@ struct TouchLayoutEditor: View {
      @State private var panelDrag = CGSize.zero
      @State private var saveItem: DispatchWorkItem?
      @AppStorage("zom.aimAttackMode") private var aimAttackMode = 0          // aim joystick: 0 no attack, 1 one attack on release, 2 auto-attack while pushed
@@ -88,7 +103,7 @@ index 8cc6e27..721236f 100644
      @State private var presets: [TouchPreset] = []
      @State private var naming = false
      @State private var newName = ""
-@@ -218,17 +229,18 @@ struct TouchLayoutEditor: View {
+@@ -218,17 +241,18 @@ struct TouchLayoutEditor: View {
                  ForEach($layout.items) { $item in
                      // gesture goes on before .position, so each control's touch area is the control itself, not the whole screen
                      Chip(item: $item, selected: selected == item.id, opacity: layout.opacity)
@@ -111,10 +126,14 @@ index 8cc6e27..721236f 100644
                      .offset(x: panelOffset.width + panelDrag.width, y: panelOffset.height + panelDrag.height)
              }
              .coordinateSpace(name: "canvas")
-@@ -284,7 +296,12 @@ struct TouchLayoutEditor: View {
+@@ -284,7 +308,16 @@ struct TouchLayoutEditor: View {
                          Button("Mouse button") { add(.mouse, label: "CLK", code: 0) }
                          if !layout.items.contains(where: { $0.kind == .stick }) { Button("Joystick") { add(.stick, label: "", code: 0, size: 130) } }
                          if !layout.items.contains(where: { $0.kind == .aimstick }) { Button("Aim joystick") { add(.aimstick, label: "", code: 0, size: 130) } }
++                        Button("Radial menu") {      // hold, slide to an option, let go; options are set by tapping it
++                            add(.radial, label: "", code: 0, size: 58)
++                            if let n = layout.items.indices.last { layout.items[n].slots = (0..<4).map { _ in RadialSlot() } }
++                        }
 +                        if !layout.items.contains(where: { $0.kind == .scroll }) { Button("Scroll strip") { add(.scroll, label: "", code: 0, size: 70) } }   // slide up/down: mouse wheel at the cursor
                          if !layout.items.contains(where: { $0.kind == .keyboard }) { Button("Keyboard toggle") { add(.keyboard, label: "KB", code: 0, size: 44) } }
 +                        Button("Fire mode toggle") {      // switches one chosen button between Default and Release; starts on the first left-click button
@@ -124,7 +143,7 @@ index 8cc6e27..721236f 100644
                      }
                  } label: { pill("Add", system: "plus") }
                  Button { layout = pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout; TouchLayoutStore.save(layout, pad: pad); selected = nil } label: { pill("Reset", system: "arrow.counterclockwise") }
-@@ -302,9 +319,24 @@ struct TouchLayoutEditor: View {
+@@ -302,9 +335,24 @@ struct TouchLayoutEditor: View {
                  Button { dismiss() } label: { pill("Done", system: "checkmark", filled: true) }
              }
  
@@ -150,7 +169,7 @@ index 8cc6e27..721236f 100644
              }
              if !pad {
                  HStack {
-@@ -318,20 +350,37 @@ struct TouchLayoutEditor: View {
+@@ -318,20 +366,37 @@ struct TouchLayoutEditor: View {
                          Picker("", selection: $aimAttackMode) { Text("Off").tag(0); Text("Release").tag(1); Text("Auto").tag(2) }.pickerStyle(.segmented)
                      }
                  }
@@ -188,11 +207,11 @@ index 8cc6e27..721236f 100644
          Divider().overlay(Color.white.opacity(0.12))
          VStack(alignment: .leading, spacing: 8) {
 -            Text(item.kind == .stick ? "Joystick" : item.kind == .aimstick ? "Aim joystick" : item.kind == .padstick ? (item.code == 0 ? "Left stick" : "Right stick") : item.label.isEmpty ? "Control" : item.label).font(.system(size: 13, weight: .semibold))
-+            Text(item.kind == .stick ? "Joystick" : item.kind == .aimstick ? "Aim joystick" : item.kind == .scroll ? "Scroll strip" : item.kind == .padstick ? (item.code == 0 ? "Left stick" : "Right stick") : item.label.isEmpty ? "Control" : item.label).font(.system(size: 13, weight: .semibold))
++            Text(item.kind == .stick ? "Joystick" : item.kind == .aimstick ? "Aim joystick" : item.kind == .scroll ? "Scroll strip" : item.kind == .radial ? (item.label.isEmpty ? "Radial menu" : "Radial menu (\(item.label))") : item.kind == .padstick ? (item.code == 0 ? "Left stick" : "Right stick") : item.label.isEmpty ? "Control" : item.label).font(.system(size: 13, weight: .semibold))
              if item.kind == .padbtn || item.kind == .padtrig {
                  HStack {
                      Text("Acts as").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
-@@ -383,6 +432,50 @@ struct TouchLayoutEditor: View {
+@@ -383,12 +448,57 @@ struct TouchLayoutEditor: View {
                          .multilineTextAlignment(.center).font(.system(size: 13, weight: .semibold)).frame(width: 80, height: 28)
                          .background(Color.white.opacity(0.12), in: Capsule()).textInputAutocapitalization(.characters).autocorrectionDisabled()
                  }
@@ -225,6 +244,7 @@ index 8cc6e27..721236f 100644
 +                    }.pickerStyle(.segmented)
 +                }
 +            }
++            if item.kind == .radial { radialEditor(i) }
 +            if item.kind == .firemode {
 +                HStack {
 +                    Text("Changes").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
@@ -243,10 +263,163 @@ index 8cc6e27..721236f 100644
              }
              HStack {
                  Text("Size").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
-@@ -402,6 +495,11 @@ struct TouchLayoutEditor: View {
+                 Slider(value: Binding(get: { layout.items[i].size }, set: { layout.items[i].size = $0 }), in: (item.isStick ? 90.0 : 36.0)...(item.isStick ? 200.0 : 110.0)).tint(.white)
+             }
+-            if !item.locked {
++            if !isLocked(item) {
+                 Button(role: .destructive) { layout.items.remove(at: i); selected = nil } label: {
+                     Text("Delete control").font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 30)
+                         .background(Color.red.opacity(0.18), in: Capsule()).foregroundStyle(Color.red)
+@@ -402,6 +512,157 @@ struct TouchLayoutEditor: View {
              .background(filled ? Color.white : Color.white.opacity(0.12), in: Capsule()).foregroundStyle(filled ? Color.black : .white)
      }
  
++    /// HIDE and PAD/TCH can't be deleted, or you could lose the controls, unless a radial menu holds the same control.
++    private func isLocked(_ item: TouchItem) -> Bool {
++        guard item.locked else { return false }
++        let want: RadialSlot.Kind = item.kind == .hide ? .hide : .mode
++        return !layout.items.contains { $0.kind == .radial && ($0.slots ?? []).contains { $0.kind == want } }
++    }
++
++    // MARK: radial menu
++
++    @ViewBuilder private func radialEditor(_ i: Int) -> some View {
++        let slots = layout.items[i].slots ?? []
++        HStack {
++            Text("Label").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
++            Spacer()
++            TextField("None", text: Binding(get: { layout.items[i].label }, set: { layout.items[i].label = String($0.prefix(5)).uppercased() }))
++                .multilineTextAlignment(.center).font(.system(size: 13, weight: .semibold)).frame(width: 80, height: 28)
++                .background(Color.white.opacity(0.12), in: Capsule()).textInputAutocapitalization(.characters).autocorrectionDisabled()
++        }
++        HStack {
++            Text("Options").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
++            Spacer()
++            Text("\(slots.count)").font(.system(size: 13, weight: .semibold, design: .monospaced))
++            Stepper("", value: Binding(get: { slots.count }, set: { setSlotCount(i, $0) }), in: 2...8).labelsHidden()
++        }
++        HStack {
++            Text("Tap sends").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
++            Spacer()
++            Menu {
++                Button("Nothing") { layout.items[i].tapSlot = nil }
++                ForEach(Array(slots.enumerated()), id: \.element.id) { n, sl in
++                    Button("\(n + 1). \(slotTitle(sl))") { layout.items[i].tapSlot = n }
++                }
++            } label: {
++                pillText(layout.items[i].tapSlot.flatMap { n -> String? in slots.indices.contains(n) ? "\(n + 1). \(slotTitle(slots[n]))" : nil } ?? "Nothing")
++            }
++        }
++        ForEach(Array(slots.enumerated()), id: \.element.id) { n, sl in
++            HStack(spacing: 6) {
++                Text("\(n + 1)").font(.system(size: 11, design: .monospaced)).foregroundStyle(.white.opacity(0.45)).frame(width: 14)
++                TextField("Label", text: Binding(get: { slot(i, n)?.label ?? "" }, set: { v in editSlot(i, n) { $0.label = String(v.prefix(8)) } }))
++                    .multilineTextAlignment(.center).font(.system(size: 12, weight: .semibold)).frame(width: 64, height: 26)
++                    .background(Color.white.opacity(0.12), in: Capsule()).autocorrectionDisabled()
++                Spacer(minLength: 4)
++                slotMenu(i, n, sl)
++            }
++        }
++        Text("In game: hold it, slide toward an option and let go. Options go clockwise from the top; letting go where you started sends nothing.")
++            .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
++    }
++
++    @ViewBuilder private func slotMenu(_ i: Int, _ n: Int, _ sl: RadialSlot) -> some View {
++        let copyable = layout.items.filter { [.key, .mouse, .keyboard, .hide, .mode, .firemode].contains($0.kind) }
++        Menu {
++            if !copyable.isEmpty {
++                Menu("Copy from button") {
++                    ForEach(copyable) { b in Button(buttonTitle(b)) { editSlot(i, n) { $0 = slotFrom(b, id: $0.id) } } }
++                }
++            }
++            ForEach(KeyCatalog.groups, id: \.0) { group in
++                Menu(group.0) {
++                    ForEach(group.1, id: \.1) { e in
++                        Button(e.0) { editSlot(i, n) { $0.kind = .key; $0.code = e.1; $0.target = nil; $0.label = KeyCatalog.shortLabel(key: e.1) } }
++                    }
++                }
++            }
++            Menu("Mouse") {
++                ForEach(KeyCatalog.mouse, id: \.1) { e in
++                    Button(e.0) { editSlot(i, n) { $0.kind = .mouse; $0.code = e.1; $0.target = nil; $0.label = e.0.prefix(1).uppercased() + "CLK" } }
++                }
++            }
++            Menu("Controls") {
++                Button("Hide / show controls") { editSlot(i, n) { $0.kind = .hide; $0.target = nil; $0.label = "HIDE" } }
++                Button("PAD / TCH mode") { editSlot(i, n) { $0.kind = .mode; $0.target = nil; $0.label = "PAD" } }
++                Button("Keyboard") { editSlot(i, n) { $0.kind = .keyboard; $0.target = nil; $0.label = "KB" } }
++                Menu("Fire mode toggle for") {
++                    ForEach(layout.items.filter { $0.kind == .key || $0.kind == .mouse }) { b in
++                        Button(buttonName(b)) { editSlot(i, n) { $0.kind = .firemode; $0.target = b.id; $0.label = "MODE" } }
++                    }
++                }
++            }
++            Divider()
++            if n > 0 { Button { moveSlot(i, n) } label: { Label("Move up", systemImage: "arrow.up") } }
++            Button(role: .destructive) { editSlot(i, n) { $0 = RadialSlot(id: $0.id) } } label: { Label("Clear", systemImage: "xmark") }
++        } label: {
++            pillText(slotSends(sl))
++        }
++    }
++
++    private func pillText(_ t: String) -> some View {
++        Text(t).font(.system(size: 12, weight: .semibold)).lineLimit(1).padding(.horizontal, 10).frame(height: 26)
++            .background(Color.white.opacity(0.12), in: Capsule())
++    }
++    private func slot(_ i: Int, _ n: Int) -> RadialSlot? {
++        guard layout.items.indices.contains(i), let a = layout.items[i].slots, a.indices.contains(n) else { return nil }
++        return a[n]
++    }
++    private func editSlot(_ i: Int, _ n: Int, _ change: (inout RadialSlot) -> Void) {
++        guard layout.items.indices.contains(i), var a = layout.items[i].slots, a.indices.contains(n) else { return }
++        change(&a[n]); layout.items[i].slots = a
++    }
++    private func setSlotCount(_ i: Int, _ count: Int) {
++        var a = layout.items[i].slots ?? []
++        while a.count < count { a.append(RadialSlot()) }
++        while a.count > count { a.removeLast() }
++        layout.items[i].slots = a
++        if let t = layout.items[i].tapSlot, t >= count { layout.items[i].tapSlot = nil }
++    }
++    private func moveSlot(_ i: Int, _ n: Int) {
++        guard var a = layout.items[i].slots, n > 0, a.indices.contains(n) else { return }
++        a.swapAt(n, n - 1); layout.items[i].slots = a
++        if let t = layout.items[i].tapSlot { layout.items[i].tapSlot = t == n ? n - 1 : t == n - 1 ? n : t }
++    }
++    private func slotFrom(_ b: TouchItem, id: String) -> RadialSlot {
++        switch b.kind {
++        case .key: return RadialSlot(id: id, kind: .key, code: b.code, label: b.label)
++        case .mouse: return RadialSlot(id: id, kind: .mouse, code: b.code, label: b.label)
++        case .keyboard: return RadialSlot(id: id, kind: .keyboard, label: b.label.isEmpty ? "KB" : b.label)
++        case .hide: return RadialSlot(id: id, kind: .hide, label: "HIDE")
++        case .mode: return RadialSlot(id: id, kind: .mode, label: "PAD")
++        case .firemode: return RadialSlot(id: id, kind: .firemode, label: "MODE", target: b.target)
++        default: return RadialSlot(id: id)
++        }
++    }
++    private func slotSends(_ sl: RadialSlot) -> String {
++        switch sl.kind {
++        case .none: return "Choose…"
++        case .key: return KeyCatalog.name(key: sl.code)
++        case .mouse: return KeyCatalog.mouse.first { $0.1 == sl.code }?.0 ?? "Mouse"
++        case .hide: return "Hide / show"
++        case .mode: return "PAD / TCH"
++        case .keyboard: return "Keyboard"
++        case .firemode: return "Fire mode: " + (layout.items.first { $0.id == sl.target }.map(buttonName) ?? "?")
++        }
++    }
++    private func slotTitle(_ sl: RadialSlot) -> String { sl.label.isEmpty ? slotSends(sl) : sl.label }
++    private func buttonTitle(_ b: TouchItem) -> String {
++        switch b.kind {
++        case .key, .mouse: return buttonName(b)
++        case .keyboard: return "Keyboard toggle"
++        case .hide: return "HIDE"
++        case .mode: return "PAD / TCH"
++        case .firemode: return "Fire mode toggle (\(layout.items.first { $0.id == b.target }.map(buttonName) ?? "?"))"
++        default: return b.label
++        }
++    }
++
 +    private func buttonName(_ b: TouchItem) -> String {
 +        let sends = b.kind == .mouse ? KeyCatalog.mouse.first { $0.1 == b.code }?.0 ?? "Mouse" : KeyCatalog.name(key: b.code)
 +        return b.label.isEmpty ? sends : "\(b.label) (\(sends))"
@@ -255,7 +428,7 @@ index 8cc6e27..721236f 100644
      private func setOutput(_ i: Int, kind: TouchItem.Kind, code: Int, label: String) {
          layout.items[i].kind = kind; layout.items[i].code = code; layout.items[i].label = String(label.prefix(5))
      }
-@@ -418,6 +516,22 @@ private struct Chip: View {
+@@ -418,6 +679,22 @@ private struct Chip: View {
      let selected: Bool
      let opacity: Double
      var body: some View {
@@ -278,8 +451,21 @@ index 8cc6e27..721236f 100644
          ZStack {
              Circle().fill(item.kind == .aimstick ? Color(red: 0.35, green: 0.08, blue: 0.06).opacity(0.45) : Color(white: 0.1).opacity(0.45))
              Circle().stroke(item.kind == .aimstick ? Color(red: 1, green: 0.55, blue: 0.5).opacity(0.7) : Color.white.opacity(0.6), lineWidth: 2)
+@@ -425,7 +702,11 @@ private struct Chip: View {
+                 Circle().fill(item.kind == .aimstick ? Color(red: 1, green: 0.6, blue: 0.55).opacity(0.6) : Color.white.opacity(0.55)).frame(width: item.size * 0.38, height: item.size * 0.38)
+                 if item.kind == .aimstick { Image(systemName: "scope").font(.system(size: item.size * 0.2)).foregroundStyle(.white.opacity(0.8)) }
+             } else {
+-                Text(item.label).font(.system(size: item.size > 50 ? 15 : 12, weight: .bold)).foregroundStyle(.white).minimumScaleFactor(0.6).lineLimit(1)
++                if item.kind == .radial && item.label.isEmpty {
++                    Image(systemName: "line.3.horizontal").font(.system(size: item.size * 0.32, weight: .semibold)).foregroundStyle(.white)
++                } else {
++                    Text(item.label).font(.system(size: item.size > 50 ? 15 : 12, weight: .bold)).foregroundStyle(.white).minimumScaleFactor(0.6).lineLimit(1)
++                }
+             }
+         }
+         .frame(width: item.size, height: item.size)
 diff --git a/native/glfw-ios/glfw_ios.m b/native/glfw-ios/glfw_ios.m
-index ce0dcfa..dd15b02 100644
+index ce0dcfa..06f71e8 100644
 --- a/native/glfw-ios/glfw_ios.m
 +++ b/native/glfw-ios/glfw_ios.m
 @@ -211,13 +211,32 @@ static void push_mouse(int btn, int action) { Ev e = {.type = EV_MOUSEBTN, .a =
@@ -316,17 +502,18 @@ index ce0dcfa..dd15b02 100644
  @end
  @interface GLFWiOSView : UIView <UIGestureRecognizerDelegate>
  @property (nonatomic) GLFWwindow *win;
-@@ -241,6 +260,9 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
+@@ -241,6 +260,10 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
  - (void)toggleMode;
  - (void)toggleKeyboard;
  - (void)toggleControls;
 +- (void)releaseLatches;
 +- (void)cycleFireModeFrom:(ZOButton *)toggle;
++- (void)cycleFireModeForTarget:(NSString *)tid;
 +- (void)updateFireToggles;
  - (void)updateControlVisibility;
  - (void)updateCursorVisibility;
  - (void)setPadConnected:(BOOL)on;
-@@ -260,19 +282,96 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
+@@ -260,19 +283,96 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
      [b addSubview:b.label];
      return b;
  }
@@ -365,7 +552,10 @@ index ce0dcfa..dd15b02 100644
 +    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 40 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
 +        ZOButton *s = ws; if (s && s.down && s.autoTimer) [s send:YES];
 +    });
-+}
+ }
+-- (void)touchesBegan:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = YES; }
+-- (void)touchesEnded:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = NO; }
+-- (void)touchesCancelled:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = NO; }
 +- (void)stopAuto { [self.autoTimer invalidate]; self.autoTimer = nil; }
 +- (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
 +    if (self.latched) { [self releaseLatch]; self.dragTouch = nil; return; }       // a tap on a held button lets go of it
@@ -418,16 +608,13 @@ index ce0dcfa..dd15b02 100644
 +    if (cancelled) [self releaseLatch];
 +    if (self.latched) return;                                                       // finger lifted but the button stays held
 +    self.down = NO;
- }
--- (void)touchesBegan:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = YES; }
--- (void)touchesEnded:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = NO; }
--- (void)touchesCancelled:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e { self.down = NO; }
++}
 +- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finishTouches:ts cancelled:NO]; }
 +- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finishTouches:ts cancelled:YES]; }
  @end
  
  @interface ZOJoystick : UIView
-@@ -316,6 +415,9 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
+@@ -316,6 +416,9 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
  - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self reset]; }
  @end
  
@@ -437,7 +624,7 @@ index ce0dcfa..dd15b02 100644
  // Aiming stick: while it is pushed past a small dead zone it holds the right mouse button (the game's aim stance) and puts the cursor around the
  // player, in the pushed direction, so the character turns and aims that way. Pair it with ATK for firing. Letting go releases the aim.
  @interface ZOAimStick : UIView
-@@ -345,21 +447,86 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
+@@ -345,21 +448,219 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
      [CATransaction begin]; [CATransaction setDisableActions:YES]; self.thumb.position = CGPointMake(r + dx, r + dy); [CATransaction commit];
      GLFWiOSView *gv = (GLFWiOSView *)self.superview;
      if (len > r * 0.25) {
@@ -527,10 +714,143 @@ index ce0dcfa..dd15b02 100644
 +}
 +- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finish:ts]; }
 +- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finish:ts]; }
++@end
++
++// Radial menu: hold it (or start sliding) and its options fan out around it, clockwise from the top; slide toward one and let go to send it.
++// Letting go near where the finger started sends nothing. A quick tap sends the tap option, if one is set. An option can be a key, a mouse
++// button, or one of the overlay's own controls (hide/show, PAD/TCH, keyboard, a fire mode toggle), so HIDE and PAD can live in a radial.
++@interface ZORadialSlot : NSObject
++@property (nonatomic, copy) NSString *kind, *label, *target;     // kind: none, key, mouse, hide, mode, keyboard, firemode
++@property (nonatomic) int code;
++@end
++@implementation ZORadialSlot
++@end
++@interface ZORadial : UIView
++@property (nonatomic) CGPoint norm;
++@property (nonatomic, strong) NSArray<ZORadialSlot *> *slots;
++@property (nonatomic) int tapSlot;                     // -1 = a tap does nothing
++@property (nonatomic, weak) UITouch *touch;
++@property (nonatomic) CGPoint startPt, ringCenter;     // in the game view
++@property (nonatomic) BOOL open;
++@property (nonatomic) int hot;                         // highlighted option, -1 = none
++@property (nonatomic) NSUInteger token;
++@property (nonatomic, strong) NSMutableArray<UIView *> *ringViews;
++@property (nonatomic, strong) UILabel *face;
++- (BOOL)holds:(NSString *)kind;
++- (void)setFaceText:(NSString *)t;
++- (void)closeRing;
++@end
++@implementation ZORadial
++- (instancetype)initWithFrame:(CGRect)f {
++    if ((self = [super initWithFrame:f])) {
++        self.multipleTouchEnabled = YES; _hot = -1; _tapSlot = -1;
++        self.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.45];
++        self.layer.cornerRadius = f.size.width / 2; self.layer.borderWidth = 2; self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.6].CGColor;
++        self.face = [[UILabel alloc] initWithFrame:self.bounds];
++        self.face.textAlignment = NSTextAlignmentCenter; self.face.textColor = UIColor.whiteColor; self.face.userInteractionEnabled = NO;
++        self.face.adjustsFontSizeToFitWidth = YES; self.face.minimumScaleFactor = 0.6;
++        [self addSubview:self.face];
++    }
++    return self;
++}
++- (void)setFaceText:(NSString *)t {
++    CGFloat w = self.bounds.size.width;
++    self.face.text = t.length ? t : @"\u2261";                                           // three bars when it has no label
++    self.face.font = [UIFont boldSystemFontOfSize:t.length ? (w > 50 ? 15 : 12) : w * 0.4];
++}
++- (BOOL)holds:(NSString *)kind { for (ZORadialSlot *s in self.slots) if ([s.kind isEqualToString:kind]) return YES; return NO; }
++- (GLFWiOSView *)gv { return (GLFWiOSView *)self.superview; }
++- (CGFloat)ringRadius { NSUInteger n = self.slots.count; return n <= 4 ? 76 : n <= 6 ? 88 : 100; }
++- (double)slotAngle:(NSUInteger)i { return -90.0 + 360.0 * i / MAX(1, self.slots.count); }
++- (void)openRing {
++    if (self.open || self.slots.count == 0) return;
++    self.open = YES;
++    GLFWiOSView *gv = self.gv; CGFloat R = self.ringRadius, ext = R + 34, W = gv.bounds.size.width, H = gv.bounds.size.height;
++    CGPoint c = self.center;                                                           // pulled in from the edges so every option is on screen
++    c.x = MIN(MAX(c.x, ext), MAX(ext, W - ext)); c.y = MIN(MAX(c.y, ext), MAX(ext, H - ext));
++    self.ringCenter = c;
++    self.ringViews = [NSMutableArray array];
++    for (NSUInteger i = 0; i < self.slots.count; i++) {
++        ZORadialSlot *s = self.slots[i]; double a = [self slotAngle:i] * M_PI / 180;
++        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 58, 58)];
++        l.center = CGPointMake(c.x + R * cos(a), c.y + R * sin(a));
++        BOOL empty = [s.kind isEqualToString:@"none"];
++        l.text = s.label.length ? s.label : (empty ? @"\u2014" : @"?");
++        l.textAlignment = NSTextAlignmentCenter; l.textColor = UIColor.whiteColor; l.font = [UIFont boldSystemFontOfSize:13];
++        l.adjustsFontSizeToFitWidth = YES; l.minimumScaleFactor = 0.55; l.userInteractionEnabled = NO;
++        l.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.78]; l.layer.cornerRadius = 29; l.layer.masksToBounds = YES;
++        l.layer.borderWidth = 2; l.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.6].CGColor;
++        if (empty) l.alpha = 0.45;
++        [gv addSubview:l]; [self.ringViews addObject:l];
++    }
++    [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
++}
++- (void)setHot:(int)h {
++    if (_hot == h) return; _hot = h;
++    for (NSUInteger i = 0; i < self.ringViews.count; i++) {
++        UIView *v = self.ringViews[i]; BOOL on = (int)i == h;
++        v.backgroundColor = on ? [UIColor colorWithRed:0.9 green:0.3 blue:0.2 alpha:0.9] : [UIColor colorWithWhite:0.1 alpha:0.78];
++        v.transform = on ? CGAffineTransformMakeScale(1.15, 1.15) : CGAffineTransformIdentity;
++    }
++    if (h >= 0) [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
++}
++- (void)closeRing {
++    for (UIView *v in self.ringViews) [v removeFromSuperview];
++    self.ringViews = nil; self.open = NO; _hot = -1;
++}
++- (void)fire:(int)i {
++    if (i < 0 || i >= (int)self.slots.count) return;
++    ZORadialSlot *s = self.slots[i]; GLFWiOSView *gv = self.gv; NSString *k = s.kind;
++    if ([k isEqualToString:@"key"] || [k isEqualToString:@"mouse"]) {                // a quick press and release
++        BOOL key = [k isEqualToString:@"key"]; int c = s.code;
++        if (key) push_key(c, GLFW_PRESS); else push_mouse(c, GLFW_PRESS);
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 80 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
++            if (key) push_key(c, GLFW_RELEASE); else push_mouse(c, GLFW_RELEASE);
++        });
++        if (key && c == 256) [gv releaseLatches];
++    }
++    else if ([k isEqualToString:@"hide"]) [gv toggleControls];
++    else if ([k isEqualToString:@"mode"]) [gv toggleMode];
++    else if ([k isEqualToString:@"keyboard"]) [gv toggleKeyboard];
++    else if ([k isEqualToString:@"firemode"]) [gv cycleFireModeForTarget:s.target];
++}
++- (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
++    if (self.touch) return;
++    self.touch = ts.anyObject; self.startPt = [self.touch locationInView:self.gv]; self.hot = -1;
++    self.backgroundColor = [UIColor colorWithRed:0.9 green:0.3 blue:0.2 alpha:0.6];
++    NSUInteger tok = ++self.token; __weak ZORadial *ws = self;
++    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{   // held: open the ring
++        ZORadial *s = ws; if (s && s.token == tok && s.touch) [s openRing];
++    });
++}
++- (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
++    if (!self.touch || ![ts containsObject:self.touch]) return;
++    CGPoint p = [self.touch locationInView:self.gv];
++    CGFloat dx = p.x - self.startPt.x, dy = p.y - self.startPt.y;
++    if (!self.open) { if (hypot(dx, dy) < 12) return; [self openRing]; }              // sliding opens it straight away
++    if (hypot(dx, dy) < 26) { self.hot = -1; return; }                                  // still near the start: nothing chosen
++    double a = atan2(dy, dx) * 180 / M_PI; int best = -1; double bd = 1e9;              // the option in the direction the thumb moved
++    for (NSUInteger i = 0; i < self.slots.count; i++) {
++        double d = fabs(fmod(a - [self slotAngle:i] + 540.0, 360.0) - 180.0);
++        if (d < bd) { bd = d; best = (int)i; }
++    }
++    self.hot = best;
++}
++- (void)finish:(NSSet<UITouch *> *)ts cancelled:(BOOL)cancelled {
++    if (!self.touch || ![ts containsObject:self.touch]) return;
++    self.touch = nil; self.token++;
++    self.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.45];
++    BOOL wasOpen = self.open; int h = self.hot;
++    [self closeRing];
++    if (cancelled) return;
++    [self fire:wasOpen ? h : self.tapSlot];                                             // open: the chosen option (or nothing); tap: the tap option
++}
++- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finish:ts cancelled:NO]; }
++- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self finish:ts cancelled:YES]; }
  @end
  
  // Receives soft-keyboard text and turns it into GLFW key/char events. Unhandled hardware key presses pass up the responder chain to the game view.
-@@ -436,7 +603,9 @@ static void frame_rate_hint_start(void) {
+@@ -436,7 +737,9 @@ static void frame_rate_hint_start(void) {
      if (!self.pointerTouch || ![ts containsObject:self.pointerTouch]) return;
      CGPoint p = [self.pointerTouch locationInView:self];
      if (hypot(p.x - self.startPt.x, p.y - self.startPt.y) > 10) self.moved = YES;
@@ -541,7 +861,7 @@ index ce0dcfa..dd15b02 100644
      else [self moveCursorTo:p];
      self.lastPt = p;
  }
-@@ -481,6 +650,30 @@ static void frame_rate_hint_start(void) {
+@@ -481,6 +784,31 @@ static void frame_rate_hint_start(void) {
      if (self.keyboardShown) [self.kbInput becomeFirstResponder];
      else { [self.kbInput resignFirstResponder]; [self becomeFirstResponder]; }
  }
@@ -555,8 +875,9 @@ index ce0dcfa..dd15b02 100644
 +    for (UIView *v in self.controls) if ([v isKindOfClass:ZOButton.class] && [((ZOButton *)v).itemId isEqualToString:iid]) return (ZOButton *)v;
 +    return nil;
 +}
-+- (void)cycleFireModeFrom:(ZOButton *)toggle {
-+    ZOButton *t = [self buttonWithItemId:toggle.targetId]; if (!t || t.kind > 1) return;
++- (void)cycleFireModeFrom:(ZOButton *)toggle { [self cycleFireModeForTarget:toggle.targetId]; }
++- (void)cycleFireModeForTarget:(NSString *)tid {
++    ZOButton *t = [self buttonWithItemId:tid]; if (!t || t.kind > 1) return;
 +    t.fireMode = t.fireMode == 2 ? 0 : 2;
 +    [self updateFireToggles];
 +    [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
@@ -572,15 +893,21 @@ index ce0dcfa..dd15b02 100644
  - (void)toggleControls {
      self.controlsHidden = !self.controlsHidden;
      self.hideButton.label.text = self.controlsHidden ? @"SHOW" : @"HIDE";
-@@ -494,6 +687,7 @@ static void frame_rate_hint_start(void) {
+@@ -494,7 +822,12 @@ static void frame_rate_hint_start(void) {
  - (void)updateControlVisibility {
      [self updateCursorVisibility];
      BOOL away = self.padConnected || kbm_connected();       // a controller, or a physical keyboard together with a mouse
+-    for (UIView *v in self.controls) v.hidden = self.controlsHidden || away;
 +    if (self.controlsHidden || away) [self releaseLatches];   // a held right-click must not get stuck with no button left to tap
-     for (UIView *v in self.controls) v.hidden = self.controlsHidden || away;
++    for (UIView *v in self.controls) {
++        BOOL isRadial = [v isKindOfClass:ZORadial.class];
++        v.hidden = (self.controlsHidden && !(isRadial && [(ZORadial *)v holds:@"hide"])) || away;   // a radial with Hide/Show is the way back
++        if (isRadial && v.hidden) [(ZORadial *)v closeRing];
++    }
      self.hideButton.hidden = away; self.modeButton.hidden = away;
  }
-@@ -522,7 +716,8 @@ static void frame_rate_hint_start(void) {
+ - (void)setPadConnected:(BOOL)on { if (_padConnected == on) return; _padConnected = on; [self updateControlVisibility]; glfwi_log("controller %s: on-screen controls %s", on ? "connected" : "disconnected", on ? "hidden" : "shown"); }
+@@ -522,8 +855,10 @@ static void frame_rate_hint_start(void) {
      NSDictionary *lay = json.length ? [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil] : nil;
      NSArray *items = [lay isKindOfClass:NSDictionary.class] ? lay[@"items"] : nil;
      if (![items isKindOfClass:NSArray.class] || items.count == 0) return NO;
@@ -588,12 +915,34 @@ index ce0dcfa..dd15b02 100644
 +    // 5% floor: nearly invisible but still clearly there (under 1% opacity iOS stops delivering touches)
 +    CGFloat alpha = [lay[@"opacity"] respondsToSelector:@selector(doubleValue)] ? MAX(0.05, MIN(1.0, [lay[@"opacity"] doubleValue])) : 1.0;
      int tag = 30;
++    BOOL radialHide = NO, radialMode = NO;                // a radial holding these replaces the standalone HIDE / PAD buttons
      for (NSDictionary *it in items) {
          if (![it isKindOfClass:NSDictionary.class]) continue;
-@@ -536,13 +731,26 @@ static void frame_rate_hint_start(void) {
+         NSString *kind = it[@"kind"]; if (![kind isKindOfClass:NSString.class]) continue;
+@@ -536,20 +871,54 @@ static void frame_rate_hint_start(void) {
              ZOAimStick *a = [[ZOAimStick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; a.tag = tag++; a.norm = norm; a.alpha = alpha;
              [self addSubview:a]; [self.controls addObject:a]; continue;
          }
++        if ([kind isEqualToString:@"radial"]) {
++            ZORadial *r = [[ZORadial alloc] initWithFrame:CGRectMake(0, 0, size, size)]; r.tag = tag++; r.norm = norm; r.alpha = alpha;
++            NSMutableArray<ZORadialSlot *> *sl = [NSMutableArray array];
++            NSArray *raw = [it[@"slots"] isKindOfClass:NSArray.class] ? it[@"slots"] : @[];
++            for (NSDictionary *d in raw) {
++                if (![d isKindOfClass:NSDictionary.class]) continue;
++                ZORadialSlot *s = [ZORadialSlot new];
++                s.kind = [d[@"kind"] isKindOfClass:NSString.class] ? d[@"kind"] : @"none";
++                s.code = [d[@"code"] respondsToSelector:@selector(intValue)] ? [d[@"code"] intValue] : 0;
++                s.label = [d[@"label"] isKindOfClass:NSString.class] ? d[@"label"] : @"";
++                s.target = [d[@"target"] isKindOfClass:NSString.class] ? d[@"target"] : nil;
++                [sl addObject:s]; if (sl.count == 8) break;
++            }
++            r.slots = sl;
++            r.tapSlot = [it[@"tapSlot"] respondsToSelector:@selector(intValue)] ? [it[@"tapSlot"] intValue] : -1;
++            [r setFaceText:label];
++            if ([r holds:@"hide"]) radialHide = YES;
++            if ([r holds:@"mode"]) radialMode = YES;
++            [self addSubview:r]; [self.controls addObject:r]; continue;
++        }
 +        if ([kind isEqualToString:@"scroll"]) {           // drawn 0.6 x 2.2 times its size, so "size" scales it like the other controls
 +            ZOScrollStrip *s = [[ZOScrollStrip alloc] initWithFrame:CGRectMake(0, 0, size * 0.6, size * 2.2)]; s.tag = tag++; s.norm = norm; s.alpha = alpha;
 +            [self addSubview:s]; [self.controls addObject:s]; continue;
@@ -618,20 +967,22 @@ index ce0dcfa..dd15b02 100644
          [self addSubview:b];
          if (k == 3) { self.hideButton = b; b.tag = 19; }
          else if (k == 4) { self.modeButton = b; b.tag = 20; }
-@@ -550,6 +758,7 @@ static void frame_rate_hint_start(void) {
+         else [self.controls addObject:b];
      }
-     if (!self.hideButton) { self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44]; self.hideButton.tag = 19; [self addSubview:self.hideButton]; }   // never lose these two
-     if (!self.modeButton) { self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton]; }
+-    if (!self.hideButton) { self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44]; self.hideButton.tag = 19; [self addSubview:self.hideButton]; }   // never lose these two
+-    if (!self.modeButton) { self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton]; }
++    if (!self.hideButton && !radialHide) { self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44]; self.hideButton.tag = 19; [self addSubview:self.hideButton]; }   // never lose these two
++    if (!self.modeButton && !radialMode) { self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton]; }
 +    [self updateFireToggles];
      glfwi_log("touch layout: %lu saved controls", (unsigned long)items.count);
      return YES;
  }
-@@ -557,15 +766,20 @@ static void frame_rate_hint_start(void) {
+@@ -557,15 +926,20 @@ static void frame_rate_hint_start(void) {
  // button must not count, or holding the stick with one thumb and a button with the other reads as a zoom gesture.
  - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
      for (UIView *v = touch.view; v && v != self; v = v.superview)
 -        if ([v isKindOfClass:ZOButton.class] || [v isKindOfClass:ZOJoystick.class] || [v isKindOfClass:ZOAimStick.class]) return NO;
-+        if ([v isKindOfClass:ZOButton.class] || [v isKindOfClass:ZOJoystick.class] || [v isKindOfClass:ZOAimStick.class] || [v isKindOfClass:ZOScrollStrip.class]) return NO;
++        if ([v isKindOfClass:ZOButton.class] || [v isKindOfClass:ZOJoystick.class] || [v isKindOfClass:ZOAimStick.class] || [v isKindOfClass:ZOScrollStrip.class] || [v isKindOfClass:ZORadial.class]) return NO;
      return YES;
  }
  - (void)installControls {
@@ -652,11 +1003,12 @@ index ce0dcfa..dd15b02 100644
      UITapGestureRecognizer *two = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(twoFingerTap:)];
      two.delegate = self;
      two.numberOfTouchesRequired = 2; [self addGestureRecognizer:two];
-@@ -601,9 +815,10 @@ static void frame_rate_hint_start(void) {
+@@ -601,9 +975,11 @@ static void frame_rate_hint_start(void) {
      for (UIView *v in self.subviews) {
          CGPoint np = CGPointZero;
          if ([v isKindOfClass:ZOButton.class]) np = ((ZOButton *)v).norm; else if ([v isKindOfClass:ZOJoystick.class]) np = ((ZOJoystick *)v).norm; else if ([v isKindOfClass:ZOAimStick.class]) np = ((ZOAimStick *)v).norm;
 +        else if ([v isKindOfClass:ZOScrollStrip.class]) np = ((ZOScrollStrip *)v).norm;
++        else if ([v isKindOfClass:ZORadial.class]) np = ((ZORadial *)v).norm;
          if (np.x != 0 || np.y != 0) {      // saved layout
 -            CGFloat hw = v.bounds.size.width / 2;
 -            v.center = CGPointMake(MIN(MAX(np.x * W, hw), W - hw), MIN(MAX(np.y * H, hw), H - hw));
