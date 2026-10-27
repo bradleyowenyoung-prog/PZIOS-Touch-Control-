@@ -1,4 +1,4 @@
-From 3624328eaed49eba25b2ff129beb113ba86e645f Mon Sep 17 00:00:00 2001
+From 2d3c35f7a3bc84cf97eadd02a39a2377f8be34b3 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 11:26:14 +0000
 Subject: [PATCH 1/2] Touch controls: per-button drag-to-aim, fire modes and
@@ -21,18 +21,20 @@ Per key/mouse button (tap a button in the editor):
   lifting the finger sends one press).
 
 New "Fire mode toggle" control (Add menu): pick the button it changes
-("Changes"); each tap in game cycles that button Default -> Auto ->
-Release and shows the current mode (DEF/AUTO/REL) on the toggle.
+("Changes"); each tap in game switches that button between Default and
+Release and shows the current mode (DEF/REL) on the toggle. The editor
+settings panel scrolls when it is taller than the screen, so Add/Done stay
+reachable.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01URCT3hQyV93hoPsTKj56eK
 ---
- HostApp/Sources/ControlsEditor.swift |  59 ++++++++++-
- native/glfw-ios/glfw_ios.m           | 142 +++++++++++++++++++++++++--
- 2 files changed, 194 insertions(+), 7 deletions(-)
+ HostApp/Sources/ControlsEditor.swift |  76 +++++++++++++-
+ native/glfw-ios/glfw_ios.m           | 143 +++++++++++++++++++++++++--
+ 2 files changed, 209 insertions(+), 10 deletions(-)
 
 diff --git a/HostApp/Sources/ControlsEditor.swift b/HostApp/Sources/ControlsEditor.swift
-index 8cc6e27..b7039c6 100644
+index 8cc6e27..de3d5f9 100644
 --- a/HostApp/Sources/ControlsEditor.swift
 +++ b/HostApp/Sources/ControlsEditor.swift
 @@ -6,7 +6,7 @@ import UIKit
@@ -63,18 +65,46 @@ index 8cc6e27..b7039c6 100644
      @State private var presets: [TouchPreset] = []
      @State private var naming = false
      @State private var newName = ""
-@@ -285,6 +290,10 @@ struct TouchLayoutEditor: View {
+@@ -229,6 +234,7 @@ struct TouchLayoutEditor: View {
+                 }
+                 panel
+                     .frame(width: min(360, W * 0.42))
++                    .frame(maxHeight: H - 16)                  // never taller than the screen; the settings part scrolls instead
+                     .offset(x: panelOffset.width + panelDrag.width, y: panelOffset.height + panelDrag.height)
+             }
+             .coordinateSpace(name: "canvas")
+@@ -285,6 +291,10 @@ struct TouchLayoutEditor: View {
                          if !layout.items.contains(where: { $0.kind == .stick }) { Button("Joystick") { add(.stick, label: "", code: 0, size: 130) } }
                          if !layout.items.contains(where: { $0.kind == .aimstick }) { Button("Aim joystick") { add(.aimstick, label: "", code: 0, size: 130) } }
                          if !layout.items.contains(where: { $0.kind == .keyboard }) { Button("Keyboard toggle") { add(.keyboard, label: "KB", code: 0, size: 44) } }
-+                        Button("Fire mode toggle") {      // cycles one chosen button through Default / Auto / Release; starts on the first left-click button
++                        Button("Fire mode toggle") {      // switches one chosen button between Default and Release; starts on the first left-click button
 +                            add(.firemode, label: "MODE", code: 0, size: 44)
 +                            if let n = layout.items.indices.last { layout.items[n].target = layout.items.first { $0.kind == .mouse && $0.code == 0 }?.id }
 +                        }
                      }
                  } label: { pill("Add", system: "plus") }
                  Button { layout = pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout; TouchLayoutStore.save(layout, pad: pad); selected = nil } label: { pill("Reset", system: "arrow.counterclockwise") }
-@@ -318,6 +327,14 @@ struct TouchLayoutEditor: View {
+@@ -302,6 +312,19 @@ struct TouchLayoutEditor: View {
+                 Button { dismiss() } label: { pill("Done", system: "checkmark", filled: true) }
+             }
+ 
++            // The settings below scroll when they don't fit, so the buttons above never end up off screen.
++            ViewThatFits(in: .vertical) {
++                settings
++                ScrollView { settings.padding(.trailing, 6) }.scrollBounceBehavior(.basedOnSize)
++            }
++        }
++        .padding(14)
++        .background(Color(white: 0.11).opacity(0.96), in: RoundedRectangle(cornerRadius: 16))
++        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.12), lineWidth: 1))
++    }
++
++    @ViewBuilder private var settings: some View {
++        VStack(spacing: 10) {
+             HStack {
+                 Text("Opacity").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                 Slider(value: $layout.opacity, in: 0.3...1).tint(.white)
+@@ -318,13 +341,18 @@ struct TouchLayoutEditor: View {
                          Picker("", selection: $aimAttackMode) { Text("Off").tag(0); Text("Release").tag(1); Text("Auto").tag(2) }.pickerStyle(.segmented)
                      }
                  }
@@ -89,7 +119,14 @@ index 8cc6e27..b7039c6 100644
              }
  
              if let i = selectedIndex { inspector(i) }
-@@ -383,6 +400,41 @@ struct TouchLayoutEditor: View {
+         }
+-        .padding(14)
+-        .background(Color(white: 0.11).opacity(0.96), in: RoundedRectangle(cornerRadius: 16))
+-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.12), lineWidth: 1))
+     }
+ 
+     @ViewBuilder private func inspector(_ i: Int) -> some View {
+@@ -383,6 +411,41 @@ struct TouchLayoutEditor: View {
                          .multilineTextAlignment(.center).font(.system(size: 13, weight: .semibold)).frame(width: 80, height: 28)
                          .background(Color.white.opacity(0.12), in: Capsule()).textInputAutocapitalization(.characters).autocorrectionDisabled()
                  }
@@ -127,11 +164,11 @@ index 8cc6e27..b7039c6 100644
 +                            .background(Color.white.opacity(0.12), in: Capsule())
 +                    }
 +                }
-+                Text("Each tap in game cycles that button: Default → Auto → Release.").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
++                Text("Each tap in game switches that button between Default and Release.").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
              }
              HStack {
                  Text("Size").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
-@@ -402,6 +454,11 @@ struct TouchLayoutEditor: View {
+@@ -402,6 +465,11 @@ struct TouchLayoutEditor: View {
              .background(filled ? Color.white : Color.white.opacity(0.12), in: Capsule()).foregroundStyle(filled ? Color.black : .white)
      }
  
@@ -144,7 +181,7 @@ index 8cc6e27..b7039c6 100644
          layout.items[i].kind = kind; layout.items[i].code = code; layout.items[i].label = String(label.prefix(5))
      }
 diff --git a/native/glfw-ios/glfw_ios.m b/native/glfw-ios/glfw_ios.m
-index ce0dcfa..94a626c 100644
+index ce0dcfa..806595d 100644
 --- a/native/glfw-ios/glfw_ios.m
 +++ b/native/glfw-ios/glfw_ios.m
 @@ -211,13 +211,31 @@ static void push_mouse(int btn, int action) { Ev e = {.type = EV_MOUSEBTN, .a =
@@ -164,7 +201,7 @@ index ce0dcfa..94a626c 100644
 +//  "zom.dragAimSens" - cursor speed for that drag (1.0 = one point of cursor per point of finger).
 +//  fireMode       - (per button, key/mouse only) 0 default: held while the finger is down. 1 auto: held, and re-pressed every 0.25 s so the
 +//                   action repeats whatever the weapon. 2 release: holding does nothing (aim without spamming); lifting the finger sends one press.
-+//                   A fire mode toggle button (kind 5) cycles one chosen button (targetId) through the three modes in game.
++//                   A fire mode toggle button (kind 5) switches one chosen button (targetId) between default and release in game.
 +@property (nonatomic) BOOL dragAimOn, holdLockOn;
 +@property (nonatomic) int fireMode;
 +@property (nonatomic, copy) NSString *itemId, *targetId;   // the layout item's id; for a fire mode toggle, the id of the button it changes
@@ -290,14 +327,15 @@ index ce0dcfa..94a626c 100644
  @end
  
  @interface ZOJoystick : UIView
-@@ -481,6 +578,29 @@ static void frame_rate_hint_start(void) {
+@@ -481,6 +578,30 @@ static void frame_rate_hint_start(void) {
      if (self.keyboardShown) [self.kbInput becomeFirstResponder];
      else { [self.kbInput resignFirstResponder]; [self becomeFirstResponder]; }
  }
 +- (void)releaseLatches {
 +    for (UIView *v in self.controls) if ([v isKindOfClass:ZOButton.class]) [(ZOButton *)v releaseLatch];
 +}
-+// Fire mode toggle: each tap moves its target button to the next mode (default -> auto -> release -> default). The toggle shows the mode.
++// Fire mode toggle: each tap switches its target button between default and release (auto counts as default: holding a button
++// already repeats most actions). The toggle shows the mode.
 +- (ZOButton *)buttonWithItemId:(NSString *)iid {
 +    if (!iid.length) return nil;
 +    for (UIView *v in self.controls) if ([v isKindOfClass:ZOButton.class] && [((ZOButton *)v).itemId isEqualToString:iid]) return (ZOButton *)v;
@@ -305,7 +343,7 @@ index ce0dcfa..94a626c 100644
 +}
 +- (void)cycleFireModeFrom:(ZOButton *)toggle {
 +    ZOButton *t = [self buttonWithItemId:toggle.targetId]; if (!t || t.kind > 1) return;
-+    t.fireMode = (t.fireMode + 1) % 3;
++    t.fireMode = t.fireMode == 2 ? 0 : 2;
 +    [self updateFireToggles];
 +    [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
 +}
@@ -320,7 +358,7 @@ index ce0dcfa..94a626c 100644
  - (void)toggleControls {
      self.controlsHidden = !self.controlsHidden;
      self.hideButton.label.text = self.controlsHidden ? @"SHOW" : @"HIDE";
-@@ -494,6 +614,7 @@ static void frame_rate_hint_start(void) {
+@@ -494,6 +615,7 @@ static void frame_rate_hint_start(void) {
  - (void)updateControlVisibility {
      [self updateCursorVisibility];
      BOOL away = self.padConnected || kbm_connected();       // a controller, or a physical keyboard together with a mouse
@@ -328,7 +366,7 @@ index ce0dcfa..94a626c 100644
      for (UIView *v in self.controls) v.hidden = self.controlsHidden || away;
      self.hideButton.hidden = away; self.modeButton.hidden = away;
  }
-@@ -540,9 +661,17 @@ static void frame_rate_hint_start(void) {
+@@ -540,9 +662,17 @@ static void frame_rate_hint_start(void) {
              ZOJoystick *j = [[ZOJoystick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; j.tag = tag++; j.norm = norm; j.alpha = alpha;
              [self addSubview:j]; [self.controls addObject:j]; continue;
          }
@@ -347,7 +385,7 @@ index ce0dcfa..94a626c 100644
          [self addSubview:b];
          if (k == 3) { self.hideButton = b; b.tag = 19; }
          else if (k == 4) { self.modeButton = b; b.tag = 20; }
-@@ -550,6 +679,7 @@ static void frame_rate_hint_start(void) {
+@@ -550,6 +680,7 @@ static void frame_rate_hint_start(void) {
      }
      if (!self.hideButton) { self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44]; self.hideButton.tag = 19; [self addSubview:self.hideButton]; }   // never lose these two
      if (!self.modeButton) { self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton]; }
