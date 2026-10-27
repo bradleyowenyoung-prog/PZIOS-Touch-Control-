@@ -1,4 +1,4 @@
-From be5436711863d95d7da1adc6769e1a73e1c8564e Mon Sep 17 00:00:00 2001
+From 30e12253e0e949d2bbc6cd67c441ed80358b62a3 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 11:26:14 +0000
 Subject: [PATCH 2/2] Test builds: two-thumb options without the new touch
@@ -19,7 +19,7 @@ Claude-Session: https://claude.ai/code/session_01URCT3hQyV93hoPsTKj56eK
  1 file changed, 52 insertions(+), 3 deletions(-)
 
 diff --git a/native/glfw-ios/glfw_ios.m b/native/glfw-ios/glfw_ios.m
-index 9f44250..07ae22d 100644
+index dd15b02..9844b82 100644
 --- a/native/glfw-ios/glfw_ios.m
 +++ b/native/glfw-ios/glfw_ios.m
 @@ -210,6 +210,42 @@ static void push_key(int key, int action) { Ev e = {.type = EV_KEY, .a = key, .b
@@ -87,7 +87,7 @@ index 9f44250..07ae22d 100644
      for (UIView *v in self.controls) if ([v isKindOfClass:ZOButton.class] && [((ZOButton *)v).itemId isEqualToString:iid]) return (ZOButton *)v;
      return nil;
  }
-@@ -745,9 +787,16 @@ static void frame_rate_hint_start(void) {
+@@ -746,9 +788,16 @@ static void frame_rate_hint_start(void) {
          if (k <= 1) {                                                         // key and mouse buttons only: the per-button two-thumb options
              id da = it[@"dragAim"], fm = it[@"fireMode"], hl = it[@"holdLock"], ht = it[@"holdLockTime"];
              b.holdLockDelay = [ht respondsToSelector:@selector(doubleValue)] ? MAX(0.1, MIN(3.0, [ht doubleValue])) : 0.5;

@@ -1,4 +1,4 @@
-From ae8a29521fc331026a04d65925c5f9f0a5c1f49b Mon Sep 17 00:00:00 2001
+From af8c5d98581cc5794cf952e28b1e1cc97cf8f5bb Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 11:26:14 +0000
 Subject: [PATCH 1/2] Touch controls: two-thumb options, scroll strip, launcher
@@ -35,18 +35,20 @@ Also:
   ("zom.aimAttackMode": Release attacks once when the stick is let go,
   Auto holds the attack while it is pushed; cancelled touches never
   attack).
+- Opacity can go down to 5% (was 30% in the editor, 20% in game), and
+  the editor shows the value.
 - The editor settings panel scrolls when it is taller than the screen,
   so Add/Done stay reachable.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01URCT3hQyV93hoPsTKj56eK
 ---
- HostApp/Sources/ControlsEditor.swift | 132 ++++++++++++--
- native/glfw-ios/glfw_ios.m           | 254 ++++++++++++++++++++++++---
- 2 files changed, 356 insertions(+), 30 deletions(-)
+ HostApp/Sources/ControlsEditor.swift | 136 ++++++++++++--
+ native/glfw-ios/glfw_ios.m           | 257 ++++++++++++++++++++++++---
+ 2 files changed, 361 insertions(+), 32 deletions(-)
 
 diff --git a/HostApp/Sources/ControlsEditor.swift b/HostApp/Sources/ControlsEditor.swift
-index 8cc6e27..e6ba807 100644
+index 8cc6e27..721236f 100644
 --- a/HostApp/Sources/ControlsEditor.swift
 +++ b/HostApp/Sources/ControlsEditor.swift
 @@ -6,7 +6,7 @@ import UIKit
@@ -122,7 +124,7 @@ index 8cc6e27..e6ba807 100644
                      }
                  } label: { pill("Add", system: "plus") }
                  Button { layout = pad ? TouchLayoutStore.padDefaultLayout : TouchLayoutStore.defaultLayout; TouchLayoutStore.save(layout, pad: pad); selected = nil } label: { pill("Reset", system: "arrow.counterclockwise") }
-@@ -302,6 +319,19 @@ struct TouchLayoutEditor: View {
+@@ -302,9 +319,24 @@ struct TouchLayoutEditor: View {
                  Button { dismiss() } label: { pill("Done", system: "checkmark", filled: true) }
              }
  
@@ -141,8 +143,14 @@ index 8cc6e27..e6ba807 100644
 +        VStack(spacing: 10) {
              HStack {
                  Text("Opacity").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
-                 Slider(value: $layout.opacity, in: 0.3...1).tint(.white)
-@@ -318,20 +348,37 @@ struct TouchLayoutEditor: View {
+-                Slider(value: $layout.opacity, in: 0.3...1).tint(.white)
++                // 5% is the floor: nearly invisible, but still easy to find in the editor, and iOS ignores touches under 1% opacity
++                Slider(value: $layout.opacity, in: 0.05...1).tint(.white)
++                Text(String(format: "%.0f%%", layout.opacity * 100)).font(.system(size: 12, design: .monospaced)).foregroundStyle(.white.opacity(0.6)).frame(width: 36, alignment: .trailing)
+             }
+             if !pad {
+                 HStack {
+@@ -318,20 +350,37 @@ struct TouchLayoutEditor: View {
                          Picker("", selection: $aimAttackMode) { Text("Off").tag(0); Text("Release").tag(1); Text("Auto").tag(2) }.pickerStyle(.segmented)
                      }
                  }
@@ -184,7 +192,7 @@ index 8cc6e27..e6ba807 100644
              if item.kind == .padbtn || item.kind == .padtrig {
                  HStack {
                      Text("Acts as").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
-@@ -383,6 +430,50 @@ struct TouchLayoutEditor: View {
+@@ -383,6 +432,50 @@ struct TouchLayoutEditor: View {
                          .multilineTextAlignment(.center).font(.system(size: 13, weight: .semibold)).frame(width: 80, height: 28)
                          .background(Color.white.opacity(0.12), in: Capsule()).textInputAutocapitalization(.characters).autocorrectionDisabled()
                  }
@@ -235,7 +243,7 @@ index 8cc6e27..e6ba807 100644
              }
              HStack {
                  Text("Size").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
-@@ -402,6 +493,11 @@ struct TouchLayoutEditor: View {
+@@ -402,6 +495,11 @@ struct TouchLayoutEditor: View {
              .background(filled ? Color.white : Color.white.opacity(0.12), in: Capsule()).foregroundStyle(filled ? Color.black : .white)
      }
  
@@ -247,7 +255,7 @@ index 8cc6e27..e6ba807 100644
      private func setOutput(_ i: Int, kind: TouchItem.Kind, code: Int, label: String) {
          layout.items[i].kind = kind; layout.items[i].code = code; layout.items[i].label = String(label.prefix(5))
      }
-@@ -418,6 +514,22 @@ private struct Chip: View {
+@@ -418,6 +516,22 @@ private struct Chip: View {
      let selected: Bool
      let opacity: Double
      var body: some View {
@@ -271,7 +279,7 @@ index 8cc6e27..e6ba807 100644
              Circle().fill(item.kind == .aimstick ? Color(red: 0.35, green: 0.08, blue: 0.06).opacity(0.45) : Color(white: 0.1).opacity(0.45))
              Circle().stroke(item.kind == .aimstick ? Color(red: 1, green: 0.55, blue: 0.5).opacity(0.7) : Color.white.opacity(0.6), lineWidth: 2)
 diff --git a/native/glfw-ios/glfw_ios.m b/native/glfw-ios/glfw_ios.m
-index ce0dcfa..9f44250 100644
+index ce0dcfa..dd15b02 100644
 --- a/native/glfw-ios/glfw_ios.m
 +++ b/native/glfw-ios/glfw_ios.m
 @@ -211,13 +211,32 @@ static void push_mouse(int btn, int action) { Ev e = {.type = EV_MOUSEBTN, .a =
@@ -572,7 +580,17 @@ index ce0dcfa..9f44250 100644
      for (UIView *v in self.controls) v.hidden = self.controlsHidden || away;
      self.hideButton.hidden = away; self.modeButton.hidden = away;
  }
-@@ -536,13 +730,26 @@ static void frame_rate_hint_start(void) {
+@@ -522,7 +716,8 @@ static void frame_rate_hint_start(void) {
+     NSDictionary *lay = json.length ? [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil] : nil;
+     NSArray *items = [lay isKindOfClass:NSDictionary.class] ? lay[@"items"] : nil;
+     if (![items isKindOfClass:NSArray.class] || items.count == 0) return NO;
+-    CGFloat alpha = [lay[@"opacity"] respondsToSelector:@selector(doubleValue)] ? MAX(0.2, MIN(1.0, [lay[@"opacity"] doubleValue])) : 1.0;
++    // 5% floor: nearly invisible but still clearly there (under 1% opacity iOS stops delivering touches)
++    CGFloat alpha = [lay[@"opacity"] respondsToSelector:@selector(doubleValue)] ? MAX(0.05, MIN(1.0, [lay[@"opacity"] doubleValue])) : 1.0;
+     int tag = 30;
+     for (NSDictionary *it in items) {
+         if (![it isKindOfClass:NSDictionary.class]) continue;
+@@ -536,13 +731,26 @@ static void frame_rate_hint_start(void) {
              ZOAimStick *a = [[ZOAimStick alloc] initWithFrame:CGRectMake(0, 0, size, size)]; a.tag = tag++; a.norm = norm; a.alpha = alpha;
              [self addSubview:a]; [self.controls addObject:a]; continue;
          }
@@ -600,7 +618,7 @@ index ce0dcfa..9f44250 100644
          [self addSubview:b];
          if (k == 3) { self.hideButton = b; b.tag = 19; }
          else if (k == 4) { self.modeButton = b; b.tag = 20; }
-@@ -550,6 +757,7 @@ static void frame_rate_hint_start(void) {
+@@ -550,6 +758,7 @@ static void frame_rate_hint_start(void) {
      }
      if (!self.hideButton) { self.hideButton = [ZOButton buttonWithTitle:@"HIDE" kind:3 code:0 size:44]; self.hideButton.tag = 19; [self addSubview:self.hideButton]; }   // never lose these two
      if (!self.modeButton) { self.modeButton = [ZOButton buttonWithTitle:@"PAD" kind:4 code:0 size:44]; self.modeButton.tag = 20; [self addSubview:self.modeButton]; }
@@ -608,7 +626,7 @@ index ce0dcfa..9f44250 100644
      glfwi_log("touch layout: %lu saved controls", (unsigned long)items.count);
      return YES;
  }
-@@ -557,15 +765,20 @@ static void frame_rate_hint_start(void) {
+@@ -557,15 +766,20 @@ static void frame_rate_hint_start(void) {
  // button must not count, or holding the stick with one thumb and a button with the other reads as a zoom gesture.
  - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
      for (UIView *v = touch.view; v && v != self; v = v.superview)
@@ -634,7 +652,7 @@ index ce0dcfa..9f44250 100644
      UITapGestureRecognizer *two = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(twoFingerTap:)];
      two.delegate = self;
      two.numberOfTouchesRequired = 2; [self addGestureRecognizer:two];
-@@ -601,9 +814,10 @@ static void frame_rate_hint_start(void) {
+@@ -601,9 +815,10 @@ static void frame_rate_hint_start(void) {
      for (UIView *v in self.subviews) {
          CGPoint np = CGPointZero;
          if ([v isKindOfClass:ZOButton.class]) np = ((ZOButton *)v).norm; else if ([v isKindOfClass:ZOJoystick.class]) np = ((ZOJoystick *)v).norm; else if ([v isKindOfClass:ZOAimStick.class]) np = ((ZOAimStick *)v).norm;
