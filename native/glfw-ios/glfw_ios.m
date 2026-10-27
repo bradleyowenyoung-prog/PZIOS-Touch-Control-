@@ -210,6 +210,42 @@ static void push_key(int key, int action) { Ev e = {.type = EV_KEY, .a = key, .b
 static void push_mouse(int btn, int action) { Ev e = {.type = EV_MOUSEBTN, .a = btn, .b = action, .c = 0}; push_event(e); if (input_log_enabled()) glfwi_log("mouse button %d action %d", btn, action); }
 static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x, .y = y}; push_event(e); }
 
+// ---- test-build options -------------------------------------------------------------------------------
+// Lets the two-thumb options be tried with a launcher that has no switches for them yet (only this library swapped into a release IPA).
+// Defaults are baked in at build time (-DTT_OPTIONS="rclatch=1;dragaim=LC,SHFT;..."); a file touch-options.txt in the pziOS folder
+// (Files app) overrides them, one "key=value" per line. Keys: holdlock, dragaim, autofire, firerelease (button labels, comma
+// separated); rclatch (1 = holdlock for every right-click button); firetoggle (TOGGLE:TARGET, e.g. MODE:LC: the button labelled MODE becomes a fire mode toggle for LC); dragspeed (e.g. 1.0).
+#ifndef TT_OPTIONS
+#define TT_OPTIONS ""
+#endif
+static void tt_parse(NSString *txt, NSString *sep, NSMutableDictionary *m) {
+    for (NSString *line in [txt componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:sep]]) {
+        NSRange eq = [line rangeOfString:@"="];
+        if (eq.location == NSNotFound || [line hasPrefix:@"#"]) continue;
+        NSString *k = [[line substringToIndex:eq.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet].lowercaseString;
+        m[k] = [[line substringFromIndex:eq.location + 1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    }
+}
+static NSDictionary<NSString *, NSString *> *tt_options(void) {
+    static NSDictionary *opts; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableDictionary *m = [NSMutableDictionary dictionary];
+        tt_parse(@TT_OPTIONS, @";", m);
+        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+        NSString *txt = [NSString stringWithContentsOfFile:[docs stringByAppendingPathComponent:@"touch-options.txt"] encoding:NSUTF8StringEncoding error:nil];
+        if (txt) tt_parse(txt, @"\r\n;", m);
+        opts = m;
+        glfwi_log("two-thumb options: %s", m.description.UTF8String);
+    });
+    return opts;
+}
+static BOOL tt_lists(NSString *key, NSString *label) {
+    NSString *v = tt_options()[key]; if (!v.length || !label.length) return NO;
+    for (NSString *s in [v componentsSeparatedByString:@","])
+        if ([[s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet] caseInsensitiveCompare:label] == NSOrderedSame) return YES;
+    return NO;
+}
+
 // ---- on-screen controls -------------------------------------------------------------------------------
 // kind: 0 = key, 1 = mouse button, 2 = toggle soft keyboard, 3 = toggle overlay, 4 = PAD/TCH, 5 = fire mode toggle (cycles its target button's fire mode)
 @interface ZOButton : UIView
@@ -350,7 +386,7 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
         if (hypot(p.x - self.dragStart.x, p.y - self.dragStart.y) < 8) return;
         self.dragActive = YES; self.dragLast = p; return;
     }
-    double k = [d doubleForKey:@"zom.dragAimSens"]; if (k <= 0) k = 1.0;
+    double k = tt_options()[@"dragspeed"] ? [tt_options()[@"dragspeed"] doubleValue] : [d doubleForKey:@"zom.dragAimSens"]; if (k <= 0) k = 1.0;
     [gv moveCursorTo:CGPointMake(gv.cursorPt.x + (p.x - self.dragLast.x) * k, gv.cursorPt.y + (p.y - self.dragLast.y) * k)];
     self.dragLast = p;
 }
@@ -840,6 +876,12 @@ static void frame_rate_hint_start(void) {
 // already repeats most actions). The toggle shows the mode.
 - (ZOButton *)buttonWithItemId:(NSString *)iid {
     if (!iid.length) return nil;
+    if ([iid hasPrefix:@"label:"]) {                // test builds: the target named by its label
+        NSString *want = [iid substringFromIndex:6];
+        for (UIView *v in self.controls)
+            if ([v isKindOfClass:ZOButton.class] && ((ZOButton *)v).kind <= 1 && [((ZOButton *)v).label.text caseInsensitiveCompare:want] == NSOrderedSame) return (ZOButton *)v;
+        return nil;
+    }
     for (UIView *v in self.controls) if ([v isKindOfClass:ZOButton.class] && [((ZOButton *)v).itemId isEqualToString:iid]) return (ZOButton *)v;
     return nil;
 }
@@ -956,9 +998,16 @@ static void frame_rate_hint_start(void) {
         if (k <= 1) {                                                         // key and mouse buttons only: the per-button two-thumb options
             id da = it[@"dragAim"], fm = it[@"fireMode"], hl = it[@"holdLock"], ht = it[@"holdLockTime"];
             b.holdLockDelay = [ht respondsToSelector:@selector(doubleValue)] ? MAX(0.1, MIN(3.0, [ht doubleValue])) : 0.5;
-            b.dragAimOn = [da respondsToSelector:@selector(boolValue)] && [da boolValue];
-            b.holdLockOn = [hl respondsToSelector:@selector(boolValue)] && [hl boolValue];
+            b.dragAimOn = ([da respondsToSelector:@selector(boolValue)] && [da boolValue]) || tt_lists(@"dragaim", label);
+            b.holdLockOn = ([hl respondsToSelector:@selector(boolValue)] && [hl boolValue]) || tt_lists(@"holdlock", label)
+                || (k == 1 && code == 1 && [tt_options()[@"rclatch"] boolValue]);         // rclatch=1: every right-click button
             b.fireMode = [fm respondsToSelector:@selector(intValue)] ? MAX(0, MIN(2, [fm intValue])) : 0;
+            if (tt_lists(@"autofire", label)) b.fireMode = 1;
+            if (tt_lists(@"firerelease", label)) b.fireMode = 2;
+            NSArray *ft = [tt_options()[@"firetoggle"] componentsSeparatedByString:@":"];      // "TOGGLE:TARGET", both button labels
+            if (ft.count == 2 && [ft[0] caseInsensitiveCompare:label] == NSOrderedSame) {
+                b.kind = 5; b.dragAimOn = b.holdLockOn = NO; b.fireMode = 0; b.targetId = [@"label:" stringByAppendingString:ft[1]];
+            }
         }
         if (k == 5) b.targetId = [it[@"target"] isKindOfClass:NSString.class] ? it[@"target"] : nil;
         [self addSubview:b];
