@@ -1,4 +1,4 @@
-From b71860c559e8ca4cf675a45904da3c3e66d66060 Mon Sep 17 00:00:00 2001
+From 584f98c3a06189074a350c8ccfa5bec7f5e265b5 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 11:26:14 +0000
 Subject: [PATCH 2/2] Test builds: two-thumb options without the new touch

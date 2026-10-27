@@ -1,8 +1,8 @@
-From 2ca4febaabc5793d1863b423c24ff460d42a15c2 Mon Sep 17 00:00:00 2001
+From 75ba4a019086a475f56745ad9078897b8e10828f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 11:26:14 +0000
-Subject: [PATCH 1/2] Touch controls: two-thumb options, scroll strip, launcher
- settings wired up
+Subject: [PATCH 1/2] Touch controls: two-thumb options, radial menu, scroll
+ strip, launcher settings
 
 Lets one thumb attack/shove and aim while the other moves, without a
 third finger. Everything is off by default and set in the touch editor.
@@ -23,6 +23,15 @@ Per key/mouse button (tap a button in the editor):
 New controls (Add menu):
 - Fire mode toggle: pick the button it changes ("Changes"); each tap in
   game switches that button between Default and Release (DEF/REL).
+- Radial menu: hold it (or start sliding) and 2-8 options fan out around
+  it, clockwise from the top; slide toward one and let go to send it,
+  let go where you started to cancel. A quick tap can send one of the
+  options. Near a screen edge the ring is pulled in to stay on screen.
+  Options are set in the editor (label, any key or mouse button, or
+  Hide/Show, PAD/TCH, Keyboard, a fire mode toggle; copy from an existing
+  button; reorder; clear). When a radial holds Hide/Show or PAD/TCH, the
+  standalone HIDE/PAD buttons can be deleted, and a radial holding
+  Hide/Show stays on screen while the controls are hidden.
 - Scroll strip: a tall bar; sliding a finger on it sends mouse-wheel
   notches at the cursor, so containers scroll (and the world zooms)
   with one thumb. Scroll speed and reverse direction in the panel.
