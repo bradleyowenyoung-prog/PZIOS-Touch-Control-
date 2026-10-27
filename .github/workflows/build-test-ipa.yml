@@ -1,0 +1,83 @@
+# Builds a pziOS test IPA with the two-thumb touch patch.
+# It compiles only the touch overlay (libglfw.dylib) from this repository plus the patches in test-patches/,
+# then swaps it into the official release IPA. No Mac, game files or JVM build needed.
+# Run it from the Actions tab: "Build test IPA" -> "Run workflow". The IPA appears under Artifacts when it finishes.
+name: Build test IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "pziOS release to patch (blank = the latest release)"
+        required: false
+        default: ""
+      options:
+        description: "Two-thumb options baked into the build (button labels as shown on screen)"
+        required: false
+        default: "rclatch=1;dragaim=LC,SHFT;firerelease=LC;dragspeed=1.0"
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply the patches in test-patches/
+        run: |
+          shopt -s nullglob
+          for p in test-patches/*.patch; do
+            if git apply --check "$p" 2>/dev/null; then git apply "$p"; echo "applied $p"
+            elif git apply -R --check "$p" 2>/dev/null; then echo "already in the code: $p"
+            else echo "::error::$p does not apply to this code"; exit 1; fi
+          done
+
+      - name: Build libglfw.dylib
+        env:
+          OPTS: ${{ inputs.options }}
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          ESC=$(printf '%s' "$OPTS" | sed 's/\\/\\\\/g; s/"/\\"/g')
+          xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
+            -dynamiclib -fobjc-arc -O2 -install_name @rpath/libglfw.dylib "-DTT_OPTIONS=\"$ESC\"" \
+            native/glfw-ios/glfw_ios.m \
+            -framework UIKit -framework Foundation -framework QuartzCore -framework Metal \
+            -framework CoreGraphics -framework ImageIO -framework GameController \
+            -o libglfw.dylib
+          ls -la libglfw.dylib
+
+      - name: Download the official IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          mkdir dl
+          gh release download $TAG --repo onlyknt/pziOS --pattern '*.ipa' --dir dl
+          ls -la dl
+          IPA=$(ls dl/*.ipa | grep -vi no-game-libs | head -1)
+          [ -n "$IPA" ] || IPA=$(ls dl/*.ipa | head -1)
+          [ -n "$IPA" ] || { echo "::error::no IPA found in that release"; exit 1; }
+          echo "using $IPA"
+          echo "IPA=$IPA" >> "$GITHUB_ENV"
+
+      - name: Swap in the patched overlay
+        run: |
+          mkdir x && cd x && unzip -q "../$IPA"
+          T=$(find Payload -name libglfw.dylib -print -quit)
+          [ -n "$T" ] || { echo "::error::libglfw.dylib not found inside the IPA"; exit 1; }
+          echo "replacing $T"
+          # Warn if the official overlay has functions the public source doesn't (features the test build would lose)
+          nm -gUj "$T" | sort > ../old-symbols.txt; nm -gUj ../libglfw.dylib | sort > ../new-symbols.txt
+          MISSING=$(comm -23 ../old-symbols.txt ../new-symbols.txt)
+          if [ -n "$MISSING" ]; then echo "::warning::the official overlay exports functions this build doesn't: $(echo $MISSING)"; fi
+          cp ../libglfw.dylib "$T"
+          codesign -f -s - "$T"
+          APP=$(ls -d Payload/*.app | head -1)
+          codesign -f -s - --preserve-metadata=entitlements "$APP" || echo "app re-sign skipped (your sideloading tool re-signs it anyway)"
+          zip -qry ../pziOS-two-thumb-test.ipa Payload
+          ls -la ../pziOS-two-thumb-test.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pziOS-two-thumb-test
+          path: pziOS-two-thumb-test.ipa
+          compression-level: 0
