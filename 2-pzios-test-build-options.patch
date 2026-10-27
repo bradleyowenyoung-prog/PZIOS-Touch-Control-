@@ -1,24 +1,25 @@
-From 3909f8d3bd23135d581b42cdde2a81a4f148d73a Mon Sep 17 00:00:00 2001
+From 8daab56431f8768a3a50625102f603c6d0ac1590 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Tue, 27 Oct 2026 13:40:35 +0000
+Date: Tue, 27 Oct 2026 14:08:16 +0000
 Subject: [PATCH 2/2] Test builds: two-thumb options without the new touch
  editor
 
-Lets the two-thumb options be tried by swapping only libglfw.dylib into a
-release IPA, whose launcher has no switches for them yet. Defaults are
-baked in with -DTT_OPTIONS="rclatch=1;dragaim=LC,SHFT;..." and a
+Lets the two-thumb options be tried with a launcher that has no switches
+for them (only libglfw.dylib swapped into a release IPA). Defaults are
+baked in with -DTT_OPTIONS="holdlock=RC;dragaim=LC,SHFT;..." and a
 touch-options.txt in the pziOS folder (Files app) overrides them.
-Keys: rclatch, dragaim, autofire, firerelease, firetoggle (TOGGLE:TARGET),
-dragspeed. Buttons are matched by their on-screen label. Not for merging.
+Keys: holdlock, dragaim, autofire, firerelease (button labels),
+rclatch, firetoggle (TOGGLE:TARGET), dragspeed. Options are added to
+whatever the editor set. Not for merging.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01URCT3hQyV93hoPsTKj56eK
 ---
- native/glfw-ios/glfw_ios.m | 54 +++++++++++++++++++++++++++++++++++---
- 1 file changed, 51 insertions(+), 3 deletions(-)
+ native/glfw-ios/glfw_ios.m | 55 +++++++++++++++++++++++++++++++++++---
+ 1 file changed, 52 insertions(+), 3 deletions(-)
 
 diff --git a/native/glfw-ios/glfw_ios.m b/native/glfw-ios/glfw_ios.m
-index a6c72fd..269e7a6 100644
+index 94a626c..f361019 100644
 --- a/native/glfw-ios/glfw_ios.m
 +++ b/native/glfw-ios/glfw_ios.m
 @@ -210,6 +210,42 @@ static void push_key(int key, int action) { Ev e = {.type = EV_KEY, .a = key, .b
@@ -28,8 +29,8 @@ index a6c72fd..269e7a6 100644
 +// ---- test-build options -------------------------------------------------------------------------------
 +// Lets the two-thumb options be tried with a launcher that has no switches for them yet (only this library swapped into a release IPA).
 +// Defaults are baked in at build time (-DTT_OPTIONS="rclatch=1;dragaim=LC,SHFT;..."); a file touch-options.txt in the pziOS folder
-+// (Files app) overrides them, one "key=value" per line. Keys: rclatch (1/0); dragaim, autofire, firerelease (button labels, comma
-+// separated); firetoggle (TOGGLE:TARGET, e.g. MODE:LC: the button labelled MODE becomes a fire mode toggle for LC); dragspeed (e.g. 1.0).
++// (Files app) overrides them, one "key=value" per line. Keys: holdlock, dragaim, autofire, firerelease (button labels, comma
++// separated); rclatch (1 = holdlock for every right-click button); firetoggle (TOGGLE:TARGET, e.g. MODE:LC: the button labelled MODE becomes a fire mode toggle for LC); dragspeed (e.g. 1.0).
 +#ifndef TT_OPTIONS
 +#define TT_OPTIONS ""
 +#endif
@@ -64,15 +65,6 @@ index a6c72fd..269e7a6 100644
  // ---- on-screen controls -------------------------------------------------------------------------------
  // kind: 0 = key, 1 = mouse button, 2 = toggle soft keyboard, 3 = toggle overlay, 4 = PAD/TCH, 5 = fire mode toggle (cycles its target button's fire mode)
  @interface ZOButton : UIView
-@@ -326,7 +362,7 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
-     self.down = YES;
-     if (self.fireMode == 1 && self.kind <= 1 && !self.autoTimer)
-         self.autoTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(autoTick:) userInfo:nil repeats:YES];
--    if (self.kind == 1 && self.code == 1 && [NSUserDefaults.standardUserDefaults boolForKey:@"zom.rcLatch"]) {
-+    if (self.kind == 1 && self.code == 1 && ([NSUserDefaults.standardUserDefaults boolForKey:@"zom.rcLatch"] || [tt_options()[@"rclatch"] boolValue])) {
-         __weak ZOButton *ws = self;
-         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{     // long press -> keep right click held
-             ZOButton *s = ws;
 @@ -347,7 +383,7 @@ static void push_cursor(double x, double y) { Ev e = {.type = EV_CURSOR, .x = x,
          if (hypot(p.x - self.dragStart.x, p.y - self.dragStart.y) < 8) return;
          self.dragActive = YES; self.dragLast = p; return;
@@ -95,18 +87,21 @@ index a6c72fd..269e7a6 100644
      for (UIView *v in self.controls) if ([v isKindOfClass:ZOButton.class] && [((ZOButton *)v).itemId isEqualToString:iid]) return (ZOButton *)v;
      return nil;
  }
-@@ -667,8 +709,14 @@ static void frame_rate_hint_start(void) {
+@@ -667,9 +709,16 @@ static void frame_rate_hint_start(void) {
          b.itemId = [it[@"id"] isKindOfClass:NSString.class] ? it[@"id"] : nil;
          if (k <= 1) {                                                         // key and mouse buttons only: the per-button two-thumb options
-             id da = it[@"dragAim"], fm = it[@"fireMode"];
+             id da = it[@"dragAim"], fm = it[@"fireMode"], hl = it[@"holdLock"];
 -            b.dragAimOn = [da respondsToSelector:@selector(boolValue)] && [da boolValue];
+-            b.holdLockOn = [hl respondsToSelector:@selector(boolValue)] && [hl boolValue];
 +            b.dragAimOn = ([da respondsToSelector:@selector(boolValue)] && [da boolValue]) || tt_lists(@"dragaim", label);
++            b.holdLockOn = ([hl respondsToSelector:@selector(boolValue)] && [hl boolValue]) || tt_lists(@"holdlock", label)
++                || (k == 1 && code == 1 && [tt_options()[@"rclatch"] boolValue]);         // rclatch=1: every right-click button
              b.fireMode = [fm respondsToSelector:@selector(intValue)] ? MAX(0, MIN(2, [fm intValue])) : 0;
 +            if (tt_lists(@"autofire", label)) b.fireMode = 1;
 +            if (tt_lists(@"firerelease", label)) b.fireMode = 2;
 +            NSArray *ft = [tt_options()[@"firetoggle"] componentsSeparatedByString:@":"];      // "TOGGLE:TARGET", both button labels
 +            if (ft.count == 2 && [ft[0] caseInsensitiveCompare:label] == NSOrderedSame) {
-+                b.kind = 5; b.dragAimOn = NO; b.fireMode = 0; b.targetId = [@"label:" stringByAppendingString:ft[1]];
++                b.kind = 5; b.dragAimOn = b.holdLockOn = NO; b.fireMode = 0; b.targetId = [@"label:" stringByAppendingString:ft[1]];
 +            }
          }
          if (k == 5) b.targetId = [it[@"target"] isKindOfClass:NSString.class] ? it[@"target"] : nil;

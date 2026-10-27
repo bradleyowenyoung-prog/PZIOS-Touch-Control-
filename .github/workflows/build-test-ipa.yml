@@ -1,6 +1,7 @@
 # Builds a pziOS test IPA with the two-thumb touch patch.
-# It compiles only the touch overlay (libglfw.dylib) from this repository plus the patches in test-patches/,
-# then swaps it into the official release IPA. No Mac, game files or JVM build needed.
+# It compiles the touch overlay (libglfw.dylib) and, optionally, the launcher (the app itself, which holds the touch
+# editor) from this repository plus the patches here, then swaps them into the official release IPA. Everything else
+# (Java runtime, graphics libraries, JIT helper) is kept from the official IPA. No Mac or game files needed.
 # Run it from the Actions tab: "Build test IPA" -> "Run workflow". The IPA appears under Artifacts when it finishes.
 name: Build test IPA
 
@@ -11,16 +12,26 @@ on:
         description: "pziOS release to patch (blank = the latest release)"
         required: false
         default: ""
+      launcher:
+        description: "Also rebuild the launcher, so the new switches appear in the touch editor"
+        type: boolean
+        default: true
       options:
-        description: "Two-thumb options baked into the build (button labels as shown on screen)"
+        description: "Extra two-thumb options baked in, on top of the editor (blank = only what you set in the editor)"
         required: false
-        default: "rclatch=1;dragaim=LC,SHFT;firerelease=LC;autofire=SHFT;dragspeed=1.0"
+        default: ""
 
 jobs:
   build:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
+      - name: Use the newest Xcode on the runner
+        run: |
+          X=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$X" ] && sudo xcode-select -s "$X"
+          xcodebuild -version
 
       - name: Apply the patches (top of the repo or test-patches/)
         run: |
@@ -33,7 +44,23 @@ jobs:
             else echo "::error::$p does not apply to this code"; exit 1; fi
           done
 
-      - name: Build libglfw.dylib
+      - name: Download and unpack the official IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          mkdir dl
+          gh release download $TAG --repo onlyknt/pziOS --pattern '*.ipa' --dir dl
+          ls -la dl
+          IPA=$(ls dl/*.ipa | grep -vi no-game-libs | head -1)
+          [ -n "$IPA" ] || IPA=$(ls dl/*.ipa | head -1)
+          [ -n "$IPA" ] || { echo "::error::no IPA found in that release"; exit 1; }
+          echo "using $IPA"
+          mkdir x && (cd x && unzip -q "../$IPA")
+          APP=$(ls -d "$PWD"/x/Payload/*.app | head -1)
+          echo "APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Build the touch overlay (libglfw.dylib)
         env:
           OPTS: ${{ inputs.options }}
         run: |
@@ -47,36 +74,41 @@ jobs:
             -o libglfw.dylib
           ls -la libglfw.dylib
 
-      - name: Download the official IPA
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.release_tag }}
+      - name: Build the launcher (app executable only)
+        if: ${{ inputs.launcher }}
         run: |
-          mkdir dl
-          gh release download $TAG --repo onlyknt/pziOS --pattern '*.ipa' --dir dl
-          ls -la dl
-          IPA=$(ls dl/*.ipa | grep -vi no-game-libs | head -1)
-          [ -n "$IPA" ] || IPA=$(ls dl/*.ipa | head -1)
-          [ -n "$IPA" ] || { echo "::error::no IPA found in that release"; exit 1; }
-          echo "using $IPA"
-          echo "IPA=$IPA" >> "$GITHUB_ENV"
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          mkdir -p HostApp/Frameworks HostApp/runtime
+          cp -R "$APP/Frameworks/MetalANGLE.framework" HostApp/Frameworks/        # only linked against; the official copy stays in the IPA
+          # The JIT helper extension needs StikJIT, which isn't in this repository; the official, unchanged extension is kept instead.
+          sed -i '' '/^      - target: ZomJITHelper$/d' HostApp/project.yml
+          grep -q "target: ZomJITHelper" HostApp/project.yml && { echo "::error::could not drop the JIT helper dependency"; exit 1; }
+          cd HostApp && xcodegen generate
+          xcodebuild -project pziOS.xcodeproj -target pziOS -configuration Release -sdk iphoneos \
+            SYMROOT="$PWD/../build" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            PZ_BUNDLE_ID=com.knt.pzios PZ_TEAM_ID="" PZ_DISPLAY_NAME=pziOS build | tail -25
+          ls -la ../build/Release-iphoneos/pziOS.app/pziOS
 
-      - name: Swap in the patched overlay
+      - name: Swap the new parts into the official IPA
+        env:
+          LAUNCHER: ${{ inputs.launcher }}
         run: |
-          mkdir x && cd x && unzip -q "../$IPA"
-          T=$(find Payload -name libglfw.dylib -print -quit)
+          T=$(find "$APP" -name libglfw.dylib -print -quit)
           [ -n "$T" ] || { echo "::error::libglfw.dylib not found inside the IPA"; exit 1; }
           echo "replacing $T"
           # Warn if the official overlay has functions the public source doesn't (features the test build would lose)
-          nm -gUj "$T" | sort > ../old-symbols.txt; nm -gUj ../libglfw.dylib | sort > ../new-symbols.txt
-          MISSING=$(comm -23 ../old-symbols.txt ../new-symbols.txt)
+          nm -gUj "$T" | sort > old-symbols.txt; nm -gUj libglfw.dylib | sort > new-symbols.txt
+          MISSING=$(comm -23 old-symbols.txt new-symbols.txt)
           if [ -n "$MISSING" ]; then echo "::warning::the official overlay exports functions this build doesn't: $(echo $MISSING)"; fi
-          cp ../libglfw.dylib "$T"
-          codesign -f -s - "$T"
-          APP=$(ls -d Payload/*.app | head -1)
+          cp libglfw.dylib "$T"; codesign -f -s - "$T"
+          if [ "$LAUNCHER" = "true" ]; then
+            EXE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP/Info.plist")
+            echo "replacing the launcher executable $EXE"
+            cp build/Release-iphoneos/pziOS.app/pziOS "$APP/$EXE"
+          fi
           codesign -f -s - --preserve-metadata=entitlements "$APP" || echo "app re-sign skipped (your sideloading tool re-signs it anyway)"
-          zip -qry ../pziOS-two-thumb-test.ipa Payload
-          ls -la ../pziOS-two-thumb-test.ipa
+          (cd x && zip -qry ../pziOS-two-thumb-test.ipa Payload)
+          ls -la pziOS-two-thumb-test.ipa
 
       - uses: actions/upload-artifact@v4
         with:
