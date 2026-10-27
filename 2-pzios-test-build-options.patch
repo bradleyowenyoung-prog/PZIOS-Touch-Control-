@@ -1,28 +1,15 @@
-From 7cbd960a2bf3f4f1ed328102f0ad7bf0bc4ae265 Mon Sep 17 00:00:00 2001
+From a7a1078294c217c21bb3f3a574cd0978d4174852 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 27 Oct 2026 11:26:14 +0000
-Subject: [PATCH 2/2] Touch controls: per-button drag-to-aim, fire modes and
- long-press lock, fire mode toggle
+Subject: [PATCH] Test builds: two-thumb options without the new touch editor
 
-Lets one thumb attack/shove and aim while the other moves, without a
-third finger. Everything is off by default and set in the touch editor.
-
-Per key/mouse button (tap a button in the editor):
-- Drag to aim: while a finger is held on the button, dragging it also
-  moves the cursor like PAD mode (8 pt dead zone; speed slider in the
-  editor panel appears once any button uses it).
-- Long press to lock: a 0.5 s press keeps the button held after the
-  finger lifts (gold ring + haptic), e.g. RC for hands-free aiming. The
-  next tap, ESC, hiding the controls, or connecting a controller lets go.
-  Only in the Default fire mode.
-- Fire mode: Default (held while pressed), Auto (held and re-pressed
-  every 0.25 s so the action repeats whatever the weapon) or Release
-  (holding does nothing and shows amber, so you can aim without spamming;
-  lifting the finger sends one press).
-
-New "Fire mode toggle" control (Add menu): pick the button it changes
-("Changes"); each tap in game cycles that button Default -> Auto ->
-Release and shows the current mode (DEF/AUTO/REL) on the toggle.
+Lets the two-thumb options be tried with a launcher that has no switches
+for them (only libglfw.dylib swapped into a release IPA). Defaults are
+baked in with -DTT_OPTIONS="holdlock=RC;dragaim=LC,SHFT;..." and a
+touch-options.txt in the pziOS folder (Files app) overrides them.
+Keys: holdlock, dragaim, autofire, firerelease (button labels),
+rclatch, firetoggle (TOGGLE:TARGET), dragspeed. Options are added to
+whatever the editor set. Not for merging.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01URCT3hQyV93hoPsTKj56eK
