@@ -20,10 +20,15 @@ on:
         description: "Extra two-thumb options baked in, on top of the editor (blank = only what you set in the editor)"
         required: false
         default: ""
+      runner:
+        description: "Mac server type (try Intel if Apple-chip runs sit queued)"
+        type: choice
+        options: [macos-15, macos-15-intel]
+        default: macos-15
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner || 'macos-15' }}
     steps:
       - uses: actions/checkout@v4
 
