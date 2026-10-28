@@ -106,8 +106,14 @@ jobs:
           MISSING=$(comm -23 old-symbols.txt new-symbols.txt)
           if [ -n "$MISSING" ]; then echo "::warning::the official overlay exports functions this build doesn't: $(echo $MISSING)"; fi
           cp libglfw.dylib "$T"; codesign -f -s - "$T"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP/Info.plist")
+          # The app's entitlements (increased memory limit, debugger access for JIT, ...) live in the official launcher's signature.
+          # Save them before anything is replaced, and sign with them at the end: a rebuilt launcher has no signature to keep them from.
+          ENT="$PWD/app-entitlements.plist"
+          codesign -d --entitlements - --xml "$APP/$EXE" > "$ENT" 2>/dev/null || codesign -d --entitlements :- "$APP/$EXE" > "$ENT"
+          [ -s "$ENT" ] || { echo "::error::could not read the official app's entitlements"; exit 1; }
+          echo "official entitlements:"; plutil -p "$ENT"
           if [ "$LAUNCHER" = "true" ]; then
-            EXE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP/Info.plist")
             echo "replacing the launcher executable $EXE"
             NEW=build/Release-iphoneos/pziOS.app/pziOS
             # Sanity checks, shown on the run page: the new editor is in it, and it links the same libraries as the official one
@@ -120,7 +126,14 @@ jobs:
             echo "::notice::launcher $(xcodebuild -version | head -1 | tr -d '\n'); $(lipo -archs "$NEW"); $(wc -c < "$APP/$EXE" | tr -d ' ') -> $(wc -c < "$NEW" | tr -d ' ') bytes; links $(wc -l < new-libs.txt | tr -d ' ') libraries"
             cp "$NEW" "$APP/$EXE"
           fi
-          codesign -f -s - --preserve-metadata=entitlements "$APP" || echo "app re-sign skipped (your sideloading tool re-signs it anyway)"
+          codesign -f -s - --entitlements "$ENT" "$APP"
+          # Check the signed app kept every official entitlement (the memory limit one is why a rebuilt launcher crashed on an iPad)
+          codesign -d --entitlements - --xml "$APP/$EXE" > signed-entitlements.plist 2>/dev/null || codesign -d --entitlements :- "$APP/$EXE" > signed-entitlements.plist
+          for k in $(plutil -convert json -o - "$ENT" | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin).keys()))'); do
+            grep -q "<key>$k</key>" signed-entitlements.plist || { echo "::error::signed app lost the entitlement $k"; exit 1; }
+          done
+          grep -q "increased-memory-limit" signed-entitlements.plist && echo "::notice::entitlements kept: $(plutil -convert json -o - "$ENT" | python3 -c 'import json,sys; print(", ".join(k.split(".")[-1] for k in json.load(sys.stdin)))')" \
+            || echo "::warning::the official app has no increased-memory-limit entitlement"
           (cd x && zip -qry ../pziOS-two-thumb-test.ipa Payload)
           ls -la pziOS-two-thumb-test.ipa
 
